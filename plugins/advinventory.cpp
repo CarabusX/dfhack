@@ -13,6 +13,7 @@
 #include "PluginManager.h"
 #include <modules/Gui.h>
 #include <modules/Screen.h>
+#include <modules/Items.h>
 
 #include "df/world.h"
 #include "df/viewscreen_dungeonmodest.h"
@@ -20,6 +21,7 @@
 #include "df/interface_key.h"
 #include "df/nemesis_record.h"
 #include "df/unit.h"
+#include "df/caste_body_info.h"
 #include "df/unit_inventory_item.h"
 #include "df/item.h"
 #include "df/item_helmst.h"
@@ -48,7 +50,20 @@ using df::global::world;
 
 color_ostream* out;
 
-void OutputString(int &x, int y, const std::string &text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK, bool rightAligned = false)
+inline void Capitalize (string& str)
+{
+	if (!str.empty())
+	{
+		str[0] = toupper(str[0]);
+	}
+}
+
+inline bool OutputTile (int x, int y, char ch, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK)
+{
+	return Screen::paintTile ( Screen::Pen(ch, color, bg_color), x, y);
+}
+
+bool OutputString (int& x, int y, const string& text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK, bool rightAligned = false)
 {
 	int leftX = x;
 	if (rightAligned) {
@@ -56,16 +71,25 @@ void OutputString(int &x, int y, const std::string &text, int8_t color = COLOR_W
 	} else {
 		x += text.length();
 	}
-    Screen::paintString(Screen::Pen(' ', color, bg_color), leftX, y, text); //
+    return Screen::paintString( Screen::Pen(' ', color, bg_color), leftX, y, text ); //
 }
 
-inline void OutputString(const int &x, int y, const std::string &text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK, bool rightAligned = false)
+inline bool OutputString (const int& x, int y, const string& text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK, bool rightAligned = false)
 {
 	int _x = x;
-	OutputString(_x, y, text, color, bg_color, rightAligned);
+	return OutputString(_x, y, text, color, bg_color, rightAligned);
 }
 
-void OutputHotkeyString(int &x, int y, const char *text, const std::string &hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE, bool addSemicolon = true)
+bool OutputLimitedString (int x, int y, const string& text, int maxLength, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK)
+{
+	if (maxLength < text.length()) {
+		return OutputString(x, y, text.substr (0, maxLength), color, bg_color);
+	} else {
+		return OutputString(x, y, text, color, bg_color);
+	}
+}
+
+void OutputHotkeyString (int& x, int y, const char* text, const string& hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE, bool addSemicolon = true)
 {
     OutputString(x, y, hotkey, hotkey_color);
     string display( addSemicolon ? ": " : " " );
@@ -73,13 +97,14 @@ void OutputHotkeyString(int &x, int y, const char *text, const std::string &hotk
     OutputString(x, y, display, text_color);
 }
 
-void OutputHotkeyString(const int &x, int y, const char *text, const std::string &hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE, bool addSemicolon = true)
+void OutputHotkeyString (const int& x, int y, const char* text, const string& hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE, bool addSemicolon = true)
 {
 	int _x = x;
 	OutputHotkeyString(_x, y, text, hotkey, hotkey_color, text_color, addSemicolon);
 }
 
 
+//Gui::getSelectedUnit(*out, true)
 df::unit* getPlayerUnit()
 {
     df::nemesis_record* playerNemesis = vector_get(world->nemesis.all, ui_advmode->player_id);
@@ -91,47 +116,160 @@ df::unit* getPlayerUnit()
 }
 
 
+static void addQualityChars (std::string& str, int16_t quality)
+{
+	static const char QUALITY_CHARS[] = { 0, '-', '+', '*', '\xF0', '\x0F' };
+
+    if (quality > 0 && quality <= 5) {
+        char c = QUALITY_CHARS[quality];
+        str = c + str + c;
+    }
+}
+
+string getItemFullName (df::item *item)
+{
+	static const char DECORATION_LEFT  = '\xAE';
+	static const char DECORATION_RIGHT = '\xAF';
+
+    string str;
+    item->getItemDescription(&str, 0);
+
+    addQualityChars(str, item->getQuality());
+
+    if (item->isImproved()) {
+        str = DECORATION_LEFT + str + DECORATION_RIGHT;
+        addQualityChars(str, item->getImprovementQuality());
+    }
+
+    return str;
+}
+
+
+df::armor_properties* getArmorProperties (df::item *item) {
+	df::armor_properties* props = nullptr;
+
+	using namespace df::enums::item_type;
+
+	switch (item->getType()) {
+		case HELM:
+		{
+			auto armorItem = virtual_cast<df::item_helmst>(item);
+			if (armorItem)
+				props = &armorItem->subtype->props;
+			break;
+		}
+		case ARMOR:
+		{
+			//auto armorItem = (df::item_armorst*)item;
+			auto armorItem = virtual_cast<df::item_armorst>(item);
+			if (armorItem)
+				props = &armorItem->subtype->props;
+			break;
+		}
+		case PANTS:
+		{
+			auto armorItem = virtual_cast<df::item_pantsst>(item);
+			if (armorItem)
+				props = &armorItem->subtype->props;
+			break;
+		}
+		case GLOVES:
+		{
+			auto armorItem = virtual_cast<df::item_glovesst>(item);
+			if (armorItem)
+				props = &armorItem->subtype->props;
+			break;
+		}
+		case SHOES:
+		{
+			auto armorItem = virtual_cast<df::item_shoesst>(item);
+			if (armorItem)
+				props = &armorItem->subtype->props;
+			break;
+		}
+		default:
+			break;
+	}
+
+	return props;
+}
+
+
+enum PossibleActionFlags {
+	POSSIBLE_EAT,
+	POSSIBLE_INTERACT,
+	POSSIBLE_WEAR,
+	POSSIBLE_WEARABLE,
+	NUM_POSSIBLE_ACTION_FLAGS,
+	NUM_DISPLAYED_ACTION_FLAGS = 3
+};
+
+
+struct SortableItem;
+typedef vector< SortableItem* const > SortableItemsVector;
+
 struct SortableItem {
+	static const vector< df::body_part_raw* >* playerBodyParts;
+
 	const df::unit_inventory_item *const inv_item;
 	df::item *const item;
+	string fullName;
+	string bodyPartName;
 
 	int8_t color;
 	int8_t indent;
-	bool collapsed;
+	int totalChildren;
+	//bool collapsed;
+	bool possibleActions [NUM_POSSIBLE_ACTION_FLAGS];
 
 	uint32_t sortingKey;
-	vector< SortableItem* >* containedItems;
-	vector< SortableItem* >* containedItemsSorted;
+	SortableItemsVector* containedItems;
+	SortableItemsVector* containedItemsSorted;
 
-	inline vector< SortableItem* >* getContainedItems();
-	inline static void incrementTotalItems();
+	//inline const SortableItemsVector* getContainedItems() const;
+	inline void addToAllItems();
+	inline void addToAllItemsSorted();
 
 
 	SortableItem (const df::unit_inventory_item* _inv_item)
-		: inv_item(_inv_item), item(_inv_item->item), indent(0), collapsed(false)
+		: inv_item(_inv_item), item(_inv_item->item), indent(0), totalChildren(0)/*, collapsed(false)*/
 	{
-		sortingKey = 0;
-		calculateKey_Mode_ItemType_BodyPart();
+		init();
 
-		incrementTotalItems();
-		initContainer();
+		calculateKey_Mode_BodyPart();
 	}
 
 	SortableItem (df::item* _item, int8_t _indent)
-		: inv_item(nullptr), item(_item), indent(_indent), collapsed(false)
+		: inv_item(nullptr), item(_item), indent(_indent), totalChildren(0)/*, collapsed(false)*/
 	{
+		init();
+
 		color = COLOR_LIGHTGREEN;
+	}
+
+	void init()
+	{
+		std::fill_n( possibleActions, (int)NUM_POSSIBLE_ACTION_FLAGS, false );
 		sortingKey = 0;
 		calculateKey_ItemType();
 
-		incrementTotalItems();
+		addToAllItems();
 		initContainer();
+
+		fullName = getItemFullName(item);
+
+		if (totalChildren > 0)
+		{
+			std::stringstream ss;
+			ss << fullName << "  <" << totalChildren << ">";
+			fullName = ss.str();
+		}
 	}
 
 	~SortableItem()
 	{
 		if (containedItems) {
-			for (auto it = containedItems->begin(); it != containedItems->end(); ++it)
+			for (auto it = containedItems->cbegin(); it != containedItems->cend(); ++it)
 			{
 				delete *it;
 			}
@@ -143,7 +281,7 @@ struct SortableItem {
 
 	void initContainer()
 	{
-		vector< SortableItem* >*& tempVector = createTempVector();
+		SortableItemsVector*& tempVector = createTempVector();
 		containedItems = tempVector;
 		tempVector     = nullptr;
 
@@ -151,43 +289,54 @@ struct SortableItem {
 
 		auto& refs = item->general_refs;
 		//for (auto& ref : refs)
-		for (auto it = refs.begin(); it != refs.end(); ++it)
+		for (auto it = refs.cbegin(); it != refs.cend(); ++it)
 		{
-			auto& ref = *it;
+			df::general_ref *ref = *it;
 
-			if (!strict_virtual_cast<df::general_ref_contains_itemst>(ref))
+			//if (!strict_virtual_cast<df::general_ref_contains_itemst>(ref))
+			if (ref->getType() != general_ref_type::CONTAINS_ITEM)
 				continue;
 
 			df::item *childItem = ref->getItem();
 			if (!childItem) continue;
 
-			containedItems->push_back( new SortableItem(childItem, newIndent) );
+			SortableItem* childSortableItem = new SortableItem(childItem, newIndent);
+			containedItems->push_back( childSortableItem );
+			totalChildren += childSortableItem->totalChildren;
 		}
 
 		if (!containedItems->empty()) {
-			indent = newIndent;
+			//indent = newIndent;
+			totalChildren += containedItems->size();
 
-			containedItemsSorted = new vector< SortableItem* > (*containedItems);
+			containedItemsSorted = new SortableItemsVector (*containedItems);
 			std::sort (containedItemsSorted->begin(), containedItemsSorted->end(), sortingFunction);
-		} else {
-			tempVector = containedItems; // return vector for reuse
+		}
+		else
+		{
+			if (!tempVector) {
+				tempVector = containedItems; // return vector for reuse
+			} else {
+				delete containedItems;
+			}
+
 			containedItems       = nullptr;
 			containedItemsSorted = nullptr;
 		}
 	}
 
-	static vector< SortableItem* >*& createTempVector()
+	static SortableItemsVector*& createTempVector()
 	{
-		static vector< SortableItem* >* tempVector = nullptr;
+		static SortableItemsVector* tempVector = nullptr;
 		if (!tempVector)
 		{
-			tempVector = new vector< SortableItem* >();
+			tempVector = new SortableItemsVector();
 		}
 		return tempVector;
 	}
 
 
-	static bool sortingFunction (SortableItem* a, SortableItem* b)
+	static bool sortingFunction (const SortableItem* a, const SortableItem* b)
 	{
 		return (a->sortingKey < b->sortingKey);
 	}
@@ -198,7 +347,11 @@ struct SortableItem {
 	// 16 bits - body part id
 	//  2 bits - layer
 	//  8 bits - layer permit
-	void calculateKey_Mode_ItemType_BodyPart() {
+	void calculateKey_Mode_BodyPart() {
+		int16_t body_part_id = inv_item->body_part_id;
+		bodyPartName = getBodyPartName (body_part_id);
+		Capitalize (bodyPartName);
+
 		uint32_t key;
 
 		using df::unit_inventory_item;
@@ -209,12 +362,16 @@ struct SortableItem {
 				color = COLOR_GREY;
 				key = 0;
 				break;
+			case unit_inventory_item::Piercing:
+				bodyPartName = "In " + bodyPartName;
+				// continue
 			case unit_inventory_item::Worn:
 			case unit_inventory_item::Flask:
 				color = COLOR_LIGHTCYAN;
 				key = 1;
 				break;
 			case unit_inventory_item::StuckIn:
+				bodyPartName = "Stuck in " + bodyPartName;
 				color = COLOR_LIGHTRED;
 				key = 2;
 				break;
@@ -225,17 +382,21 @@ struct SortableItem {
 
 		sortingKey |= (key << (4 + 16 + 2 + 8)); //30
 
-		calculateKey_ItemType(); //26
-
-		key = (uint32_t)( inv_item->body_part_id );
+		key = (uint32_t)( body_part_id );
 		sortingKey |= (key << (2 + 8)); //10
+	}
 
-		calculateKey_Layer(); //0
+	const string& getBodyPartName (int16_t body_part_id)
+	{
+		df::body_part_raw* bodyPart = (*playerBodyParts) [ body_part_id ];
+		return *(bodyPart->name_singular[0]);
 	}
 
 	void calculateKey_ItemType() {
 		uint32_t key = getKey_ItemType(item);
 		sortingKey |= (key << (16 + 2 + 8)); //26
+
+		calculateKey_Layer(); //0
 	}
 
 	static uint32_t getKey_ItemType (df::item *item)
@@ -290,79 +451,41 @@ struct SortableItem {
 		key = std::min( key, 255U );
 		sortingKey |= (key << (0));
 	}
-
-	static df::armor_properties* getArmorProperties (df::item *item) {
-		df::armor_properties* props = nullptr;
-
-		using namespace df::enums::item_type;
-
-		switch (item->getType()) {
-			case HELM:
-			{
-				auto armorItem = virtual_cast<df::item_helmst>(item);
-				if (armorItem)
-					props = &armorItem->subtype->props;
-				break;
-			}
-			case ARMOR:
-			{
-				//auto armorItem = (df::item_armorst*)item;
-				auto armorItem = virtual_cast<df::item_armorst>(item);
-				if (armorItem)
-					props = &armorItem->subtype->props;
-				break;
-			}
-			case PANTS:
-			{
-				auto armorItem = virtual_cast<df::item_pantsst>(item);
-				if (armorItem)
-					props = &armorItem->subtype->props;
-				break;
-			}
-			case GLOVES:
-			{
-				auto armorItem = virtual_cast<df::item_glovesst>(item);
-				if (armorItem)
-					props = &armorItem->subtype->props;
-				break;
-			}
-			case SHOES:
-			{
-				auto armorItem = virtual_cast<df::item_shoesst>(item);
-				if (armorItem)
-					props = &armorItem->subtype->props;
-				break;
-			}
-			default:
-				break;
-		}
-
-		return props;
-	}
 };
+
+const vector< df::body_part_raw* >* SortableItem::playerBodyParts = nullptr;
 
 
 struct Inventory {
-	vector< SortableItem* > items;
-	vector< SortableItem* > itemsSorted;
+	const df::unit* playerUnit;
 
-	inline vector< SortableItem* >& getItems();
+	SortableItemsVector items;  // doesn't include items in containers
+	SortableItemsVector itemsSorted;
+	SortableItemsVector allItems;  // includes items in containers
+	SortableItemsVector allItemsSorted;
 
-	int32_t totalItems;
-	int32_t firstVisibleIndex;
+	//inline const SortableItemsVector& getItems() const;
+	inline const SortableItemsVector& getAllItems() const;
+
+	int firstVisibleIndex;
 
 
-	Inventory()	: totalItems(0), firstVisibleIndex(0) {}
+	Inventory()
+		: firstVisibleIndex(0)
+	{
+		playerUnit = getPlayerUnit();
+
+        SortableItem::playerBodyParts = (playerUnit ? &playerUnit->body.body_plan->body_parts : nullptr);
+	}
 
 	void loadItems()
 	{
-		df::unit *playerUnit = getPlayerUnit();
 		if (!playerUnit)
 			return;
 
 		auto &unitInventory = playerUnit->inventory;
 
-		for (auto it = unitInventory.begin(); it != unitInventory.end(); ++it)
+		for (auto it = unitInventory.cbegin(); it != unitInventory.cend(); ++it)
 		{
 			const df::unit_inventory_item* inv_item = *it;
 			items.push_back( new SortableItem(inv_item) );
@@ -370,11 +493,16 @@ struct Inventory {
 
 		itemsSorted = items;
 		std::sort (itemsSorted.begin(), itemsSorted.end(), SortableItem::sortingFunction);
+
+		for (auto it = itemsSorted.cbegin(); it != itemsSorted.cend(); ++it)
+		{
+			(*it)->addToAllItemsSorted();
+		}
 	}
 
 	~Inventory()
 	{
-		for (auto it = items.begin(); it != items.end(); ++it)
+		for (auto it = items.cbegin(); it != items.cend(); ++it)
 		{
 			delete *it;
 		}
@@ -398,29 +526,32 @@ enum InventoryAction {
 
 struct InventoryActionInfo {
 	const df::interface_key key;
-	const std::string label;
+	const string label;
+	const bool allowMultiSelect;
 };
 
 InventoryActionInfo inventoryActions [NUM_ACTIONS] = {
-	{ interface_key::CUSTOM_SHIFT_D, "rop" },
-	{ interface_key::CUSTOM_SHIFT_E, "at" }, // "at or drink"
-	{ interface_key::CUSTOM_SHIFT_G, "et" },
-	{ interface_key::CUSTOM_SHIFT_I, "nteract" },
-	{ interface_key::CUSTOM_SHIFT_P, "ut" },
-	{ interface_key::CUSTOM_SHIFT_R, "emove" },
-	{ interface_key::CUSTOM_SHIFT_T, "hrow" },
-	{ interface_key::CUSTOM_SHIFT_V, "iew" },
-	{ interface_key::CUSTOM_SHIFT_W, "ear" }
+	{ interface_key::CUSTOM_SHIFT_D, "rop"    , true  },
+	{ interface_key::CUSTOM_SHIFT_E, "at"     , false }, // "at or drink"
+	{ interface_key::CUSTOM_SHIFT_G, "et"     , true  },
+	{ interface_key::CUSTOM_SHIFT_I, "nteract", false },
+	{ interface_key::CUSTOM_SHIFT_P, "ut"     , true  },
+	{ interface_key::CUSTOM_SHIFT_R, "emove"  , true  },
+	{ interface_key::CUSTOM_SHIFT_T, "hrow"   , true  },
+	{ interface_key::CUSTOM_SHIFT_V, "iew"    , false },
+	{ interface_key::CUSTOM_SHIFT_W, "ear"    , false }
 };
+
+const df::interface_key A_INV_ADVINVENTORY = interface_key::CHANGETAB;
 
 
 class ViewscreenAdvInventory : public dfhack_viewscreen
 {
 public:
-	static const int itemsListTopY    =  2;
-	static const int itemsListBottomY = -7;
-	static const int itemsListLeftX   =  0;
-	static const int itemsListRightX  = -1;
+	static const int itemsListTopY     =  2;
+	static const int itemsListBottomY_ = -7;
+	static const int itemsListLeftX    =  0;
+	static const int itemsListRightX_  = -1;
 
 	static bool isActive;
 	static bool sortItems;
@@ -467,7 +598,7 @@ public:
 			parent->feed(input);
             return;
         }
-		else if (input->count(interface_key::CHANGETAB))
+		else if (input->count(A_INV_ADVINVENTORY))
         {
 			isActive = false;
 			input->clear();
@@ -505,7 +636,7 @@ public:
 		{
 			for (int i = 0; i < NUM_ACTIONS; i++)
 			{
-				if (input->count(inventoryActions[i].key))
+				if (input->count( inventoryActions[i].key ))
 				{
 					if (i != currentAction)
 					{
@@ -527,28 +658,19 @@ public:
         Screen::clear();
         //Screen::drawBorder("  Advanced Inventory  ");
 
+		renderItemsList();
+
 		int x, y;
 		auto dim = Screen::getWindowSize();
 		OutputString(0, 0, "Advanced Inventory");
-
-		std::stringstream stream;
-		stream << "Num items: " << inventory->totalItems << " ";
-		OutputString(0, 1, stream.str());
 
 		OutputString(dim.x - 2, 0, "DFHack", COLOR_LIGHTMAGENTA, COLOR_BLACK, true);
 		OutputString(dim.x - 2, dim.y - 1, "Written by Carabus/Rafal99", COLOR_DARKGREY, COLOR_BLACK, true);
 
 		x = OutputHotkeysLine1(dim.y - 1);
-		OutputHotkeyString(x, dim.y - 1, "Basic Inventory   ", Screen::getKeyDisplay(interface_key::CHANGETAB), COLOR_LIGHTRED); //gps->dimy - 2
+		OutputHotkeyString(x, dim.y - 1, "Basic Inventory   ", Screen::getKeyDisplay(A_INV_ADVINVENTORY), COLOR_LIGHTRED); //gps->dimy - 2
 
 		x = 0; y = dim.y - 2;
-		OutputHotkeyString(x, y, "Expand/Collapse", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_C), COLOR_LIGHTGREEN, COLOR_GREY);
-		x += 3;
-		OutputHotkeyString(x, y, "Expand/Collapse All", Screen::getKeyDisplay(interface_key::CUSTOM_CTRL_C), COLOR_LIGHTGREEN, COLOR_GREY);
-		x += 3;
-		OutputHotkeyString(x, y, sortItems ? "Sort items" : "Do not sort items", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_S), COLOR_LIGHTGREEN, sortItems ? COLOR_WHITE : COLOR_GREY);
-
-		x = 0; y = dim.y - 4;
 		OutputString(x, y, "Actions:", COLOR_WHITE);
 		x += 3;
 
@@ -558,8 +680,84 @@ public:
 			x += 3;
 		}
 
+		x = 0; y = dim.y - 4;
+		/*OutputHotkeyString(x, y, "Expand/Collapse", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_C), COLOR_LIGHTGREEN, COLOR_GREY);
+		x += 3;
+		OutputHotkeyString(x, y, "Expand/Collapse All", Screen::getKeyDisplay(interface_key::CUSTOM_CTRL_C), COLOR_LIGHTGREEN, COLOR_GREY);
+		x += 3;*/
+		OutputHotkeyString(x, y, sortItems ? "Items are sorted" : "Items are not sorted", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_S), COLOR_LIGHTGREEN, sortItems ? COLOR_WHITE : COLOR_GREY);
+		//"Sort items" : "Do not sort items"
+
 		OutputString(79, dim.y - 5, "|");
 	}
+
+	void renderItemsList() {
+		auto dim = Screen::getWindowSize();
+		const int itemsListRightX  = dim.x + itemsListRightX_;
+		const int itemsListBottomY = dim.y + itemsListBottomY_;
+
+		const int hotkeyX      = itemsListLeftX;
+		const int selectedX    = hotkeyX   + 2;
+		const int itemNameX    = selectedX + 2;
+		const int scrollBarX   = itemsListRightX;
+		const int actionFlagsX = scrollBarX - 1 - NUM_DISPLAYED_ACTION_FLAGS;
+		const int weightX      = actionFlagsX - 1 - 5;
+		const int bodyPartX    = std::min( weightX - 1 - 24, 50 ); //25
+
+		const SortableItemsVector& allItems = inventory->getAllItems();
+		const int first    = inventory->firstVisibleIndex;
+		const int maxRows  = itemsListBottomY + 1 - itemsListTopY;
+		const int itemRows = std::min( (int)allItems.size() - first, maxRows );
+
+		const int numHotkeyLetters = std::min( itemRows, 26 );
+		const int numHotkeyDigits  = std::min( itemRows - 26, 10 );
+
+		static Screen::Pen hotkeyPen (0, COLOR_LIGHTGREEN, COLOR_BLACK);
+		for (int i = 0; i < numHotkeyLetters; i++)
+		{
+			Screen::paintTile (hotkeyPen.chtile(char('a' + i)), hotkeyX, itemsListTopY + i);
+		}
+		if (numHotkeyDigits > 0)
+		{
+			for (int i = 0; i < numHotkeyDigits; i++)
+			{
+				Screen::paintTile (hotkeyPen.chtile(char('0' + i)), hotkeyX, itemsListTopY + 26 + i);
+			}
+		}
+
+		//static const Screen::Pen dotPen ('.', COLOR_LIGHTGREEN, COLOR_BLACK);
+		static const Screen::Pen dotPen     ('\xC3', COLOR_GREEN, COLOR_BLACK);
+		static const Screen::Pen dotPenLast ('\xC0', COLOR_GREEN, COLOR_BLACK);
+		for (int i = 0; i < itemRows; i++)
+		{
+			SortableItem* sItem = allItems[first + i];
+			const int x = itemNameX + sItem->indent;
+			const int y = itemsListTopY + i;
+
+			OutputTile   (selectedX, y, '-', sItem->color);
+			OutputString (x, y, sItem->fullName, sItem->color);
+			OutputString (bodyPartX, y, sItem->bodyPartName, sItem->color);
+
+			if (sItem->totalChildren > 0)
+			{
+				int yLast = y + sItem->totalChildren;
+				if (sItem->totalChildren > 1)
+				{
+					int y2 = std::min( yLast - 1, itemsListBottomY );
+					Screen::fillRect(dotPen, x, y + 1, x, y2);
+				}
+				if (yLast <= itemsListBottomY)
+				{
+					Screen::paintTile (dotPenLast, x, yLast);
+				}
+			}
+		}
+
+		std::stringstream ss;
+		ss << "Total items: " << allItems.size() << " ";
+		OutputString(0, dim.y - 5, ss.str(), COLOR_GREY);
+	}
+
 
 	string getFocusString() { return "adv_inventory"; }
     //void onShow() {};
@@ -597,24 +795,43 @@ private:
 };
 
 bool ViewscreenAdvInventory::isActive  = false;
-bool ViewscreenAdvInventory::sortItems = true;
+bool ViewscreenAdvInventory::sortItems = false; //true;
 InventoryAction ViewscreenAdvInventory::currentAction = ACTION_VIEW;
 Inventory* ViewscreenAdvInventory::inventory = nullptr;
 int ViewscreenAdvInventory::tabHotkeyStringX = -1;
 
 
-inline vector< SortableItem* >* SortableItem::getContainedItems()
+/*inline const SortableItemsVector* SortableItem::getContainedItems() const
 {
 	return (ViewscreenAdvInventory::sortItems ? containedItemsSorted : containedItems);
 }
 
-inline vector< SortableItem* >& Inventory::getItems()
+inline const SortableItemsVector& Inventory::getItems() const
 {
 	return (ViewscreenAdvInventory::sortItems ? itemsSorted : items);
+}*/
+
+inline const SortableItemsVector& Inventory::getAllItems() const
+{
+	return (ViewscreenAdvInventory::sortItems ? allItemsSorted : allItems);
 }
 
-inline void SortableItem::incrementTotalItems() {
-	ViewscreenAdvInventory::inventory->totalItems++;
+inline void SortableItem::addToAllItems() {
+	ViewscreenAdvInventory::inventory->allItems.push_back(this);
+}
+
+inline void SortableItem::addToAllItemsSorted() {
+	SortableItemsVector& allItemsSorted = ViewscreenAdvInventory::inventory->allItemsSorted;
+
+	allItemsSorted.push_back(this);
+
+	if (containedItemsSorted) {
+		for (auto it = containedItemsSorted->cbegin(); it != containedItemsSorted->cend(); ++it)
+		{
+			SortableItem* sItem = *it;
+			sItem->addToAllItemsSorted();
+		}
+	}
 }
 
 
@@ -638,7 +855,7 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
 				}
 				break;
 			case ui_advmode_menu::Inventory:
-				if (input->count(interface_key::CHANGETAB))
+				if (input->count(A_INV_ADVINVENTORY))
 				{
 					ViewscreenAdvInventory::isActive = true;
 					ViewscreenAdvInventory::show();
@@ -676,17 +893,25 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
 
 		INTERPOSE_NEXT(render)();
 
-		//std::stringstream stream;
-		//stream << "0x" << std::hex << (int)Gui::getCurViewscreen() << " ";
-		//OutputString(0, 1, stream.str());
 		//OutputString(0, 1, enum_item_key(ui_advmode->menu).append("  "));
+
+		//std::stringstream ss;
+		//ss << "0x" << std::hex << (int)Gui::getCurViewscreen() << " ";
+		//OutputString(0, 1, ss.str());
+
+		//std::stringstream ss;
+		//ss << "0x" << std::hex << (int)getPlayerUnit() << " ";
+		//OutputString(0, 1, ss.str());
+		//ss.clear();
+		//ss << "0x" << std::hex << (int)Gui::getSelectedUnit(*out, true) << " ";
+		//OutputString(0, 2, ss.str());
 
 		switch (ui_advmode->menu)
         {
 			case ui_advmode_menu::Inventory:
 			{
 				int x = ViewscreenAdvInventory::getTabHotkeyStringX();
-				OutputHotkeyString(x, 24, "Advanced Inventory", Screen::getKeyDisplay(interface_key::CHANGETAB), COLOR_LIGHTRED); // gps->dimy - 2
+				OutputHotkeyString(x, 24, "Advanced Inventory", Screen::getKeyDisplay(A_INV_ADVINVENTORY), COLOR_LIGHTRED); // gps->dimy - 2
 				OutputString(79, 23, "|");
 				break;
 			}
@@ -708,7 +933,7 @@ IMPLEMENT_VMETHOD_INTERPOSE(advinventory_hook, logic);
 IMPLEMENT_VMETHOD_INTERPOSE(advinventory_hook, render);
 
 
-command_result advinventory (color_ostream &out, std::vector <std::string> & parameters)
+command_result advinventory (color_ostream &out, vector <string> & parameters)
 {
     if (!parameters.empty())
         return CR_WRONG_USAGE;
@@ -736,7 +961,7 @@ DFhackCExport command_result plugin_enable ( color_ostream &out, bool enable)
     return CR_OK;
 }
 
-DFhackCExport command_result plugin_init ( color_ostream &out, std::vector <PluginCommand> &commands)
+DFhackCExport command_result plugin_init ( color_ostream &out, vector <PluginCommand> &commands)
 {
 	::out = &out;
 	commands.push_back(PluginCommand(
