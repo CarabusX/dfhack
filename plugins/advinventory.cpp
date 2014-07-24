@@ -8,6 +8,7 @@
 #include "DataDefs.h"
 #include "Export.h"
 #include "PluginManager.h"
+#include <modules/Gui.h>
 #include <modules/Screen.h>
 
 #include "df/world.h"
@@ -23,7 +24,7 @@ using namespace df::enums;
 
 using df::global::gps;
 using df::global::ui_advmode;
-
+color_ostream* out;
 
 void OutputString(int &x, int y, const std::string &text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK, bool rightAligned = false)
 {
@@ -65,31 +66,39 @@ DFHACK_PLUGIN_IS_ENABLED(is_enabled);
 class ViewscreenAdvInventory : public dfhack_viewscreen
 {
 public:
-	ViewscreenAdvInventory()
+	static bool isActive;
+
+
+	static void show()
 	{
+		/*if (!instance)
+			instance = new ViewscreenAdvInventory();
+		else
+			instance->parent = nullptr;
+		Screen::show(instance);*/
+
+		Screen::show( new ViewscreenAdvInventory() );
 	}
 
     void feed(set<df::interface_key> *input)
     {
         if (input->count(interface_key::LEAVESCREEN))
         {
-            input->clear();
+			input->clear();
             Screen::dismiss(this);
-			ui_advmode->menu = ui_advmode_menu::Default;
+
+			input->insert(interface_key::LEAVESCREEN);
+			parent->feed(input);
             return;
         }
 		else if (input->count(interface_key::CHANGETAB))
         {
+			isActive = false;
 			input->clear();
             Screen::dismiss(this);
-			ui_advmode->menu = ui_advmode_menu::Inventory;
-            //Screen::dismiss(Gui::getCurViewscreen(true));
-            //Screen::show(new ViewscreenStocks());
-			//Screen::show(df::viewscreen *screen, df::viewscreen *before)
-			//Screen::show(new ViewscreenChooseMaterial(planner.getDefaultItemFilterForType(type)));
-			//Gui::resetDwarfmodeView(true);
-            //send_key(interface_key::D_VIEWUNIT);
 
+			//ui_advmode->menu = ui_advmode_menu::Inventory;
+            
 			/*if (VIRTUAL_CAST_VAR(unitlist, df::viewscreen_unitlistst, parent))
 			{
 				if (events->count(interface_key::UNITJOB_VIEW) || events->count(interface_key::UNITJOB_ZOOM_CRE))
@@ -109,6 +118,7 @@ public:
 					}
 				}
 			}*/
+
             return;
         }
     }
@@ -123,20 +133,28 @@ public:
         Screen::clear();
         //Screen::drawBorder("  Advanced Inventory  ");
 
+		auto dim = Screen::getWindowSize();
 		OutputString(0, 0, "Advanced Inventory");
-		OutputString(gps->dimx - 1, 0, " DFHack ", COLOR_LIGHTMAGENTA, COLOR_BLACK, true);
+		OutputString(dim.x - 2, 0, "DFHack", COLOR_LIGHTMAGENTA, COLOR_BLACK, true);
 
-		OutputString(gps->dimx - 1, gps->dimy - 1, "Written by Carabus/Rafal99", COLOR_DARKGREY, COLOR_BLACK, true);
+		OutputString(dim.x - 2, dim.y - 1, "Written by Carabus/Rafal99", COLOR_DARKGREY, COLOR_BLACK, true);
 
-		int x = OutputHotkeysLine1(gps->dimy - 1);
-		OutputHotkeyString(x, gps->dimy - 1, "Basic Inventory", Screen::getKeyDisplay(interface_key::CHANGETAB), COLOR_LIGHTRED); //gps->dimy - 2
+		int x = OutputHotkeysLine1(dim.y - 1);
+		OutputHotkeyString(x, dim.y - 1, "Basic Inventory   ", Screen::getKeyDisplay(interface_key::CHANGETAB), COLOR_LIGHTRED); //gps->dimy - 2
 	}
 
 	string getFocusString() { return "adv_inventory"; }
     //void onShow() {};
 
+private:
+	ViewscreenAdvInventory()
+	{
+	}
+
+public:
 	static int getTabHotkeyStringX() {
-		if (tabHotkeyStringX == -1) {
+		if (tabHotkeyStringX == -1)
+		{
 			tabHotkeyStringX = OutputHotkeysLine1(-1);
 		}
 		return tabHotkeyStringX;
@@ -148,18 +166,23 @@ private:
 	static int OutputHotkeysLine1 (int y)
 	{
 		int x = 0;
-		OutputHotkeyString(x, y, "to view other pages.", Screen::getKeyDisplay(interface_key::SECONDSCROLL_PAGEUP) + Screen::getKeyDisplay(interface_key::SECONDSCROLL_PAGEDOWN), COLOR_LIGHTGREEN, COLOR_GREY);
+		OutputHotkeyString(x, y, "to view other pages.",
+			Screen::getKeyDisplay(interface_key::SECONDSCROLL_PAGEUP) + Screen::getKeyDisplay(interface_key::SECONDSCROLL_PAGEDOWN),
+			COLOR_LIGHTGREEN, COLOR_GREY);
 		x += 2;
-		OutputHotkeyString(x, y, "when done.", Screen::getKeyDisplay(interface_key::LEAVESCREEN), COLOR_LIGHTGREEN, COLOR_GREY);
+		OutputHotkeyString(x, y, "when done.",
+			Screen::getKeyDisplay(interface_key::LEAVESCREEN),
+			COLOR_LIGHTGREEN, COLOR_GREY);
 		x += 2;
 		return x;
 	}
 };
 
+bool ViewscreenAdvInventory::isActive = false;
 int ViewscreenAdvInventory::tabHotkeyStringX = -1;
 
 
-struct viewscreen_advinventory : df::viewscreen_dungeonmodest {
+struct advinventory_hook : df::viewscreen_dungeonmodest {
     typedef df::viewscreen_dungeonmodest interpose_base;
 
     DEFINE_VMETHOD_INTERPOSE(void, feed, (set<df::interface_key> *input))
@@ -171,16 +194,16 @@ struct viewscreen_advinventory : df::viewscreen_dungeonmodest {
 			case Default:
 				if (input->count(interface_key::CUSTOM_CTRL_I))
 				{
-					Screen::show(new ViewscreenAdvInventory());
-					return;
+					ViewscreenAdvInventory::isActive = true;
+					input->clear();
+					input->insert(interface_key::A_INV_LOOK);
 				}
 				break;
 			case Inventory:
 				if (input->count(interface_key::CHANGETAB))
 				{
-					//Screen::dismiss(this);
-					//Screen::dismiss(Gui::getCurViewscreen(true));
-					Screen::show(new ViewscreenAdvInventory());
+					ViewscreenAdvInventory::isActive = true;
+					ViewscreenAdvInventory::show();
 					return;
 				}
 				break;
@@ -191,20 +214,37 @@ struct viewscreen_advinventory : df::viewscreen_dungeonmodest {
         INTERPOSE_NEXT(feed)(input);
     }
 	
+	DEFINE_VMETHOD_INTERPOSE(void, logic, ())
+    {
+        if (ui_advmode->menu == ui_advmode_menu::Inventory)
+		{
+			if (ViewscreenAdvInventory::isActive)
+			{
+				//static int i = 0;
+				//out->print("advinventory_hook::logic() %d\n", i++);
+				ViewscreenAdvInventory::show();
+				return;
+			}
+		}
+
+		INTERPOSE_NEXT(logic)();
+	}
+		
 	DEFINE_VMETHOD_INTERPOSE(void, render, ())
     {
+		using namespace ui_advmode_menu;
+
+		if (ui_advmode->menu == Inventory && ViewscreenAdvInventory::isActive)
+			return;
+
 		INTERPOSE_NEXT(render)();
 
 		//OutputString(0, 0, enum_item_key(ui_advmode->menu).append("  "));
-
-		using namespace ui_advmode_menu;
 
         switch (ui_advmode->menu)
         {
 			case Inventory:
 			{
-				//auto dim = Screen::getWindowSize();
-
 				int x = ViewscreenAdvInventory::getTabHotkeyStringX();
 				OutputHotkeyString(x, 24, "Advanced Inventory", Screen::getKeyDisplay(interface_key::CHANGETAB), COLOR_LIGHTRED); // gps->dimy - 2
 				break;
@@ -212,12 +252,19 @@ struct viewscreen_advinventory : df::viewscreen_dungeonmodest {
 			default:
 				return;
         }
-
     }
+
+	/*void send_key(const df::interface_key &key)
+    {
+        set< df::interface_key > input;
+        input.insert(key);
+		Gui::getCurViewscreen(true)->feed(&input);
+    }*/
 };
 
-IMPLEMENT_VMETHOD_INTERPOSE(viewscreen_advinventory, feed);
-IMPLEMENT_VMETHOD_INTERPOSE(viewscreen_advinventory, render);
+IMPLEMENT_VMETHOD_INTERPOSE(advinventory_hook, feed);
+IMPLEMENT_VMETHOD_INTERPOSE(advinventory_hook, logic);
+IMPLEMENT_VMETHOD_INTERPOSE(advinventory_hook, render);
 
 
 command_result advinventory (color_ostream &out, std::vector <std::string> & parameters)
@@ -237,8 +284,9 @@ DFhackCExport command_result plugin_enable ( color_ostream &out, bool enable)
 
     if (enable != is_enabled)
     {
-        if (!INTERPOSE_HOOK(viewscreen_advinventory, feed  ).apply(enable) ||
-			!INTERPOSE_HOOK(viewscreen_advinventory, render).apply(enable))
+        if (!INTERPOSE_HOOK(advinventory_hook, feed  ).apply(enable) ||
+			!INTERPOSE_HOOK(advinventory_hook, logic ).apply(enable) ||
+			!INTERPOSE_HOOK(advinventory_hook, render).apply(enable))
             return CR_FAILURE;
 
         is_enabled = enable;
@@ -256,13 +304,15 @@ DFhackCExport command_result plugin_init ( color_ostream &out, std::vector <Plug
         true, //allow non-interactive use
         "I am a long help string :)"
     ));
+	::out = &out;
     return CR_OK;
 }
 
 DFhackCExport command_result plugin_shutdown ( color_ostream &out )
 {
-	INTERPOSE_HOOK(viewscreen_advinventory, feed  ).remove();
-	INTERPOSE_HOOK(viewscreen_advinventory, render).remove();
+	INTERPOSE_HOOK(advinventory_hook, feed  ).remove();
+	INTERPOSE_HOOK(advinventory_hook, logic ).remove();
+	INTERPOSE_HOOK(advinventory_hook, render).remove();
     return CR_OK;
 }
 
@@ -272,14 +322,14 @@ DFhackCExport command_result plugin_shutdown ( color_ostream &out )
 DFhackCExport command_result plugin_onstatechange(color_ostream &out, state_change_event event)
 {
     switch (event) {
-    case SC_WORLD_LOADED:
-        // initialize from the world just loaded
-        break;
-    case SC_WORLD_UNLOADED:
-        // cleanup
-        break;
-    default:
-        break;
+		case SC_WORLD_LOADED:
+			// initialize from the world just loaded
+			break;
+		case SC_WORLD_UNLOADED:
+			// cleanup
+			break;
+		default:
+			break;
     }
     return CR_OK;
 }
