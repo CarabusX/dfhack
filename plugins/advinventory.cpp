@@ -1,4 +1,5 @@
 #include <string>
+#include <vector>
 #include <set>
 
 #include <VTableInterpose.h>
@@ -15,8 +16,12 @@
 #include "df/viewscreen_dungeonmodest.h"
 #include "df/ui_advmode.h"
 #include "df/interface_key.h"
+#include "df/unit.h"
+#include "df/unit_inventory_item.h"
+#include "df/item.h"
 
 using std::string;
+using std::vector;
 using std::set;
 
 using namespace DFHack;
@@ -24,6 +29,8 @@ using namespace df::enums;
 
 using df::global::gps;
 using df::global::ui_advmode;
+
+
 color_ostream* out;
 
 void OutputString(int &x, int y, const std::string &text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK, bool rightAligned = false)
@@ -43,25 +50,125 @@ inline void OutputString(const int &x, int y, const std::string &text, int8_t co
 	OutputString(_x, y, text, color, bg_color, rightAligned);
 }
 
-void OutputHotkeyString(int &x, int y, const char *text, const std::string &hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE)
+void OutputHotkeyString(int &x, int y, const char *text, const std::string &hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE, bool addSemicolon = true)
 {
     OutputString(x, y, hotkey, hotkey_color);
-    //string display(": ");
-    //display.append(text);
-	x++;
-    OutputString(x, y, string(text), text_color);
+    string display( addSemicolon ? ": " : " " );
+    display.append(text);
+    OutputString(x, y, display, text_color);
 }
 
-void OutputHotkeyString(const int &x, int y, const char *text, const std::string &hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE)
+void OutputHotkeyString(const int &x, int y, const char *text, const std::string &hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE, bool addSemicolon = true)
 {
 	int _x = x;
-	OutputHotkeyString(_x, y, text, hotkey, hotkey_color, text_color);
+	OutputHotkeyString(_x, y, text, hotkey, hotkey_color, text_color, addSemicolon);
 }
 
 
-DFHACK_PLUGIN("advinventory");
+struct SortableItem {
+	union {
+		const df::unit_inventory_item* inv_item;
+		df::item* item;
+	};
+	uint32_t sortingKey;
+	int8_t color;
 
-DFHACK_PLUGIN_IS_ENABLED(is_enabled);
+	vector< SortableItem* > containedItems;
+
+
+	SortableItem (const df::unit_inventory_item* _inv_item)
+		: inv_item(_inv_item)//, sortingKey( getSortingKey(_inv_item) )
+	{
+		sortingKey = 0;
+		calculateKey_Mode_ItemType_BodyPart();
+	}
+
+	SortableItem (df::item* _item)
+		: item(_item)
+	{
+		color = COLOR_LIGHTGREEN;
+		sortingKey = 0;
+		calculateKey_ItemType(item);
+	}
+
+	void calculateKey_Mode_ItemType_BodyPart() {
+		uint32_t key;
+
+		using df::unit_inventory_item;
+
+		switch (inv_item->mode)
+		{
+			case unit_inventory_item::Weapon:
+				color = COLOR_GREY;
+				key = 0;
+				break;
+			case unit_inventory_item::Worn:
+			case unit_inventory_item::Flask:
+				color = COLOR_LIGHTCYAN;
+				key = 1;
+				break;
+			case unit_inventory_item::StuckIn:
+				color = COLOR_LIGHTRED;
+				key = 2;
+				break;
+			default:
+				color = COLOR_WHITE;
+				key = 3;
+		}
+
+		sortingKey |= (key << (4 + 16));
+
+		calculateKey_ItemType(inv_item->item);
+
+		key = (uint32_t)( inv_item->body_part_id );
+		sortingKey |= (key << (0));
+	}
+
+	void calculateKey_ItemType (df::item *item) {
+		uint32_t key = getKey_ItemType(item);
+		sortingKey |= (key << (16));
+	}
+
+	static uint32_t getKey_ItemType (df::item *item)
+	{
+		using namespace df::enums::item_type;
+
+		switch (item->getType()) {
+			case WEAPON:
+				return 0;
+			case SHIELD:
+				return 1;
+			case HELM:
+				return 2;
+			case ARMOR:
+				return 3;
+			case PANTS:
+				return 4;
+			case GLOVES:
+				return 5;
+			case SHOES:
+				return 6;
+			case AMMO:
+				return 7;
+			case COIN:
+				return 8;
+		//	default:
+		//		return 9;
+			case FLASK:
+				return 10;
+			case QUIVER:
+				return 11;
+			case BACKPACK:
+				return 12;
+			case BOX:
+			case BIN:
+				return 13;  //containers at the end
+			default:
+				return 9;
+		}
+	}
+};
+
 
 class ViewscreenAdvInventory : public dfhack_viewscreen
 {
@@ -168,11 +275,11 @@ private:
 		int x = 0;
 		OutputHotkeyString(x, y, "to view other pages.",
 			Screen::getKeyDisplay(interface_key::SECONDSCROLL_PAGEUP) + Screen::getKeyDisplay(interface_key::SECONDSCROLL_PAGEDOWN),
-			COLOR_LIGHTGREEN, COLOR_GREY);
+			COLOR_LIGHTGREEN, COLOR_GREY, false);
 		x += 2;
 		OutputHotkeyString(x, y, "when done.",
 			Screen::getKeyDisplay(interface_key::LEAVESCREEN),
-			COLOR_LIGHTGREEN, COLOR_GREY);
+			COLOR_LIGHTGREEN, COLOR_GREY, false);
 		x += 2;
 		return x;
 	}
@@ -181,6 +288,10 @@ private:
 bool ViewscreenAdvInventory::isActive = false;
 int ViewscreenAdvInventory::tabHotkeyStringX = -1;
 
+
+DFHACK_PLUGIN("advinventory");
+
+DFHACK_PLUGIN_IS_ENABLED(is_enabled);
 
 struct advinventory_hook : df::viewscreen_dungeonmodest {
     typedef df::viewscreen_dungeonmodest interpose_base;
@@ -216,15 +327,12 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
 	
 	DEFINE_VMETHOD_INTERPOSE(void, logic, ())
     {
-        if (ui_advmode->menu == ui_advmode_menu::Inventory)
+        if (ui_advmode->menu == ui_advmode_menu::Inventory && ViewscreenAdvInventory::isActive)
 		{
-			if (ViewscreenAdvInventory::isActive)
-			{
-				//static int i = 0;
-				//out->print("advinventory_hook::logic() %d\n", i++);
-				ViewscreenAdvInventory::show();
-				return;
-			}
+			//static int i = 0;
+			//out->print("advinventory_hook::logic() %d\n", i++);
+			ViewscreenAdvInventory::show();
+			return;
 		}
 
 		INTERPOSE_NEXT(logic)();
@@ -232,16 +340,16 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
 		
 	DEFINE_VMETHOD_INTERPOSE(void, render, ())
     {
-		using namespace ui_advmode_menu;
-
-		if (ui_advmode->menu == Inventory && ViewscreenAdvInventory::isActive)
+		if (ui_advmode->menu == ui_advmode_menu::Inventory && ViewscreenAdvInventory::isActive)
 			return;
 
 		INTERPOSE_NEXT(render)();
 
 		//OutputString(0, 0, enum_item_key(ui_advmode->menu).append("  "));
 
-        switch (ui_advmode->menu)
+ 		using namespace ui_advmode_menu;
+		
+		switch (ui_advmode->menu)
         {
 			case Inventory:
 			{
@@ -297,14 +405,14 @@ DFhackCExport command_result plugin_enable ( color_ostream &out, bool enable)
 
 DFhackCExport command_result plugin_init ( color_ostream &out, std::vector <PluginCommand> &commands)
 {
-    commands.push_back(PluginCommand(
+	::out = &out;
+	commands.push_back(PluginCommand(
         "advinventory",
         "Replaces adventure mode inventory screens",
         advinventory,
         true, //allow non-interactive use
         "I am a long help string :)"
     ));
-	::out = &out;
     return CR_OK;
 }
 
