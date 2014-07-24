@@ -13,6 +13,7 @@
 #include "PluginManager.h"
 #include <modules/Gui.h>
 #include <modules/Screen.h>
+#include <modules/Units.h>
 #include <modules/Items.h>
 
 #include "df/world.h"
@@ -48,7 +49,16 @@ using df::global::ui_advmode;
 using df::global::world;
 
 
+const string VERSION_STRING = "0.1.0";
+
 color_ostream* out;
+
+inline string intToString (int i)
+{
+	std::ostringstream ss;
+	ss << i;
+	return ss.str();
+}
 
 inline void Capitalize (string& str)
 {
@@ -63,25 +73,27 @@ inline bool OutputTile (int x, int y, char ch, int8_t color = COLOR_WHITE, int8_
 	return Screen::paintTile ( Screen::Pen(ch, color, bg_color), x, y);
 }
 
-bool OutputString (int& x, int y, const string& text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK, bool rightAligned = false)
+bool OutputString (int* x, int y, const string& text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK, bool rightAligned = false)
 {
-	int leftX = x;
+	int leftX;
 	if (rightAligned) {
-		leftX -= (text.length() - 1);
+		*x -= text.length();
+		leftX = *x + 1;
 	} else {
-		x += text.length();
+		leftX = *x;
+		*x += text.length();
 	}
-    return Screen::paintString( Screen::Pen(' ', color, bg_color), leftX, y, text ); //
+    return Screen::paintString( Screen::Pen(' ', color, bg_color), leftX, y, text );
 }
 
-inline bool OutputString (const int& x, int y, const string& text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK, bool rightAligned = false)
+inline bool OutputString (int x, int y, const string& text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK, bool rightAligned = false)
 {
-	int _x = x;
-	return OutputString(_x, y, text, color, bg_color, rightAligned);
+	return OutputString(&x, y, text, color, bg_color, rightAligned);
 }
 
-bool OutputLimitedString (int x, int y, const string& text, int maxLength, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK)
+bool OutputLimitedString (int x, int y, int maxX, const string& text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK)
 {
+	int maxLength = maxX + 1 - x;
 	if (maxLength < text.length()) {
 		return OutputString(x, y, text.substr (0, maxLength), color, bg_color);
 	} else {
@@ -89,7 +101,7 @@ bool OutputLimitedString (int x, int y, const string& text, int maxLength, int8_
 	}
 }
 
-void OutputHotkeyString (int& x, int y, const char* text, const string& hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE, bool addSemicolon = true)
+void OutputHotkeyString (int* x, int y, const char* text, const string& hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE, bool addSemicolon = true)
 {
     OutputString(x, y, hotkey, hotkey_color);
     string display( addSemicolon ? ": " : " " );
@@ -97,10 +109,9 @@ void OutputHotkeyString (int& x, int y, const char* text, const string& hotkey, 
     OutputString(x, y, display, text_color);
 }
 
-void OutputHotkeyString (const int& x, int y, const char* text, const string& hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE, bool addSemicolon = true)
+void OutputHotkeyString (int x, int y, const char* text, const string& hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE, bool addSemicolon = true)
 {
-	int _x = x;
-	OutputHotkeyString(_x, y, text, hotkey, hotkey_color, text_color, addSemicolon);
+	OutputHotkeyString(&x, y, text, hotkey, hotkey_color, text_color, addSemicolon);
 }
 
 
@@ -201,6 +212,7 @@ enum PossibleActions {
 	POSSIBLE_INTERACT,
 	POSSIBLE_INTERACT_READ,
 	POSSIBLE_WEARABLE,
+	POSSIBLE_WORN,
 	POSSIBLE_WEAR,
 	NUM_POSSIBLE_ACTIONS,
 	NUM_DISPLAYED_ACTION_FLAGS = 3
@@ -223,6 +235,7 @@ PossibleActionFlagInfo possibleActionFlags [NUM_POSSIBLE_ACTIONS] = {
 	{ 'I', COLOR_LIGHTRED , 1 },
 	{ 'R', COLOR_WHITE    , 1 },
 	{ 'W', COLOR_DARKGREY , 2 },
+	{ 'W', COLOR_CYAN     , 2 },
 	{ 'W', COLOR_LIGHTCYAN, 2 },
 };
 
@@ -238,6 +251,7 @@ struct SortableItem {
 	df::item *const item;
 	string fullName;
 	string bodyPartName;
+	string weightString;
 
 	int8_t color;
 	int8_t indent;
@@ -251,13 +265,13 @@ struct SortableItem {
 
 	//inline const SortableItemsVector* getContainedItems() const;
 	inline void addToAllItems();
-	inline void addToAllItemsSorted();
+	void addToAllItemsSorted();
 
 
 	SortableItem (const df::unit_inventory_item* _inv_item)
 		: inv_item(_inv_item), item(_inv_item->item), indent(0), totalChildren(0)/*, collapsed(false)*/
 	{
-		getItemBodyPartName();
+		getItemBodyPartName(); // before adding to allItems so flasks won't iterate over themselves
 
 		init();
 
@@ -290,6 +304,8 @@ struct SortableItem {
 			ss << fullName << "  <" << totalChildren << ">";
 			fullName = ss.str();
 		}
+
+		getItemWeightString();
 	}
 
 	~SortableItem()
@@ -373,11 +389,16 @@ struct SortableItem {
 
 	void getItemBodyPartName()
 	{
+		if (!inv_item)
+			return;
+
 		int16_t body_part_id = inv_item->body_part_id;
 
 		bodyPartName = getBodyPartName (body_part_id);
 
-		if (inv_item->mode == df::unit_inventory_item::Flask)
+		using df::unit_inventory_item;
+
+		if (inv_item->mode == unit_inventory_item::Flask)
 		{
 			const SortableItem* attachedToItem = getFlaskAttachedToItem (body_part_id);
 			if (attachedToItem)
@@ -387,6 +408,38 @@ struct SortableItem {
 		}
 
 		Capitalize (bodyPartName);
+
+		switch (inv_item->mode)
+		{
+			case unit_inventory_item::Piercing:
+				bodyPartName = "In " + bodyPartName;
+				break;
+			case unit_inventory_item::StuckIn:
+				bodyPartName = "Stuck in " + bodyPartName;
+				break;
+		}
+	}
+
+
+	void addItemWeight();
+
+	void getItemWeightString()
+	{
+		if (!item->flags.bits.weight_computed)
+			return;
+
+		int32_t weight = item->weight;
+
+		if (weight > 0) {
+			weightString = intToString(weight) + '\xE2';
+		} else {
+			weightString = "<1""\xE2";
+		}
+
+		if (inv_item)
+		{
+			addItemWeight();
+		}
 	}
 
 
@@ -407,17 +460,15 @@ struct SortableItem {
 				color = COLOR_GREY;
 				key = 0;
 				break;
-			case unit_inventory_item::Piercing:
-				bodyPartName = "In " + bodyPartName;
-				// continue
 			case unit_inventory_item::Worn:
+			case unit_inventory_item::WrappedAround:
+			case unit_inventory_item::Piercing:
 			case unit_inventory_item::Flask:
-				possibleActions [POSSIBLE_WEARABLE] = true;
+				//possibleActions [POSSIBLE_WEARABLE] = true;
 				color = COLOR_LIGHTCYAN;
 				key = 1;
 				break;
 			case unit_inventory_item::StuckIn:
-				bodyPartName = "Stuck in " + bodyPartName;
 				color = COLOR_LIGHTRED;
 				key = 2;
 				break;
@@ -497,6 +548,7 @@ struct SortableItem {
 struct Inventory {
 	const df::unit* playerUnit;
 	const vector< df::body_part_raw* >* playerBodyParts;
+	int armorWeightMult;
 
 	SortableItemsVector items;  // doesn't include items in containers
 	SortableItemsVector itemsSorted;
@@ -506,15 +558,36 @@ struct Inventory {
 	//inline const SortableItemsVector& getItems() const;
 	inline const SortableItemsVector& getAllItems() const;
 
-	int firstVisibleIndex;
+	int32_t totalWeight; // TODO: use int64_t instead of two variables?
+	int32_t totalWeightFraction;
+	int32_t effWeight;
+	int32_t effWeightFraction;
+	int32_t allowedWeight;
+	string totalWeightString;
+	string effWeightString;
+	string allowedWeightString;
 
 
 	Inventory()
-		: firstVisibleIndex(0)
+		: totalWeight(0), totalWeightFraction(0), effWeight(0), effWeightFraction(0)
 	{
 		playerUnit = getPlayerUnit();
 
-        playerBodyParts = (playerUnit ? &playerUnit->body.body_plan->body_parts : nullptr);
+		int armorSkill;
+		if (playerUnit) {
+			playerBodyParts = &playerUnit->body.body_plan->body_parts;
+
+			armorSkill = Units::getEffectiveSkill( (df::unit*)playerUnit, job_skill::ARMOR );
+
+			int32_t bodySize = playerUnit->body.size_info.size_cur;
+			int strengthValue = Units::getPhysicalAttrValue( (df::unit*)playerUnit, physical_attribute_type::STRENGTH );
+			allowedWeight = std::max( 1, ( bodySize / 10 + strengthValue * 3 ) / 100 );
+		} else {
+			playerBodyParts = nullptr;
+			armorSkill = 0;
+			allowedWeight = 1;
+		}
+		armorWeightMult = std::max( 0, 15 - armorSkill );
 	}
 
 	void loadItems()
@@ -530,13 +603,17 @@ struct Inventory {
 			items.push_back( new SortableItem(inv_item) );
 		}
 
-		itemsSorted = items;
+		itemsSorted = items; //copy
 		std::sort (itemsSorted.begin(), itemsSorted.end(), SortableItem::sortingFunction);
 
 		for (auto it = itemsSorted.cbegin(); it != itemsSorted.cend(); ++it)
 		{
 			(*it)->addToAllItemsSorted();
 		}
+
+		  totalWeightString = weightToString(   totalWeight, totalWeightFraction );
+		    effWeightString = weightToString(     effWeight,   effWeightFraction );
+		allowedWeightString = weightToString( allowedWeight,                   0 );
 	}
 
 	~Inventory()
@@ -546,6 +623,21 @@ struct Inventory {
 			delete *it;
 		}
 	}
+
+
+	static string weightToString (int32_t weight, int32_t weightFraction)
+	{
+		if (weight == 0) {
+			if (weightFraction == 0) {
+				return "0""\xE2";
+			} else if (weightFraction < 1000000) {
+				return "<1""\xE2";
+			}
+		}
+
+		weight += (weightFraction / 1000000);
+		return ( intToString(weight) + '\xE2' );
+	}
 };
 
 
@@ -553,7 +645,7 @@ inline void SortableItem::addToAllItems() {
 	inventory->allItems.push_back(this);
 }
 
-inline void SortableItem::addToAllItemsSorted() {
+void SortableItem::addToAllItemsSorted() {
 	SortableItemsVector& allItemsSorted = inventory->allItemsSorted;
 
 	allItemsSorted.push_back(this);
@@ -566,6 +658,34 @@ inline void SortableItem::addToAllItemsSorted() {
 		}
 	}
 }
+
+void SortableItem::addItemWeight() {
+	int32_t weight          = item->weight;
+	int32_t weight_fraction = item->weight_fraction;
+
+	inventory->totalWeight += weight;
+	inventory->totalWeightFraction += weight_fraction;
+
+	int weightMult = inventory->armorWeightMult;
+
+	if ((inv_item->mode == df::unit_inventory_item::Worn ||
+		 inv_item->mode == df::unit_inventory_item::WrappedAround) &&
+		 item->isArmor() && weightMult < 15)
+	{
+		int64_t weight64 = (int64_t)weight * 1000000 + weight_fraction;
+		weight64 = weight64 * weightMult / 15;
+
+		weight          = weight64 / 1000000;
+		weight_fraction = weight64 % 1000000;
+
+		//weight          = weight          * weightMult / 15;
+		//weight_fraction = weight_fraction * weightMult / 15;
+	}
+
+	inventory->effWeight += weight;
+	inventory->effWeightFraction += weight_fraction;
+}
+
 
 const string& SortableItem::getBodyPartName (int16_t body_part_id)
 {
@@ -615,18 +735,19 @@ struct InventoryActionInfo {
 	const df::interface_key key;
 	const string label;
 	const bool allowMultiSelect;
+	const bool implemented;
 };
 
 InventoryActionInfo inventoryActions [NUM_ACTIONS] = {
-	{ interface_key::CUSTOM_SHIFT_D, "rop"    , true  },
-	{ interface_key::CUSTOM_SHIFT_E, "at"     , false }, // "at or drink"
-	{ interface_key::CUSTOM_SHIFT_G, "et"     , true  },
-	{ interface_key::CUSTOM_SHIFT_I, "nteract", false },
-	{ interface_key::CUSTOM_SHIFT_P, "ut"     , true  },
-	{ interface_key::CUSTOM_SHIFT_R, "emove"  , true  },
-	{ interface_key::CUSTOM_SHIFT_T, "hrow"   , true  },
-	{ interface_key::CUSTOM_SHIFT_V, "iew"    , false },
-	{ interface_key::CUSTOM_SHIFT_W, "ear"    , false }
+	{ interface_key::CUSTOM_SHIFT_D, "rop"    , true , true  },
+	{ interface_key::CUSTOM_SHIFT_E, "at"     , false, false }, // "at or drink"
+	{ interface_key::CUSTOM_SHIFT_G, "et"     , true , false },
+	{ interface_key::CUSTOM_SHIFT_I, "nteract", false, false },
+	{ interface_key::CUSTOM_SHIFT_P, "ut"     , true , false },
+	{ interface_key::CUSTOM_SHIFT_R, "emove"  , true , false },
+	{ interface_key::CUSTOM_SHIFT_T, "hrow"   , true , false },
+	{ interface_key::CUSTOM_SHIFT_V, "iew"    , false, true  },
+	{ interface_key::CUSTOM_SHIFT_W, "ear"    , false, false }
 };
 
 const df::interface_key A_INV_ADVINVENTORY = interface_key::CHANGETAB;
@@ -636,15 +757,24 @@ class ViewscreenAdvInventory : public dfhack_viewscreen
 {
 public:
 	static const int itemsListTopY     =  2;
-	static const int itemsListBottomY_ = -7;
+	static const int itemsListBottomY_ = -8;
 	static const int itemsListLeftX    =  0;
 	static const int itemsListRightX_  = -1;
 
-	static bool isActive;
+	static bool isActive; // is inventory screen in advanced mode
 	static bool sortItems;
 	static InventoryAction currentAction;
 	static Inventory* inventory;
+	static int firstIndex;
 
+
+	static void initInventory()
+	{
+		inventory = new Inventory();
+		inventory->loadItems();
+
+		firstIndex = 0;
+	}
 
 	static void show()
 	{
@@ -654,14 +784,12 @@ public:
 			instance->parent = nullptr;
 		Screen::show(instance);*/
 
-		ViewscreenAdvInventory* screen = new ViewscreenAdvInventory();
-
 		if (!inventory)
 		{
-			inventory = new Inventory();
-			inventory->loadItems();
+			initInventory();
 		}
 
+		ViewscreenAdvInventory* screen = new ViewscreenAdvInventory();
 		Screen::show(screen);
 	}
 
@@ -723,7 +851,7 @@ public:
 		{
 			for (int i = 0; i < NUM_ACTIONS; i++)
 			{
-				if (input->count( inventoryActions[i].key ))
+				if (inventoryActions[i].implemented && input->count( inventoryActions[i].key ))
 				{
 					if (i != currentAction)
 					{
@@ -749,33 +877,52 @@ public:
 
 		int x, y;
 		auto dim = Screen::getWindowSize();
-		OutputString(0, 0, "Advanced Inventory");
+		x = 0;
+		OutputString(&x, 0, "\x0F", COLOR_YELLOW);
+		OutputString(&x, 0, "Advanced Inventory");
+		OutputString(&x, 0, "\x0F", COLOR_YELLOW);
 
 		OutputString(dim.x - 2, 0, "DFHack", COLOR_LIGHTMAGENTA, COLOR_BLACK, true);
-		OutputString(dim.x - 2, dim.y - 1, "Written by Carabus/Rafal99", COLOR_DARKGREY, COLOR_BLACK, true);
+		OutputString(dim.x - 2, dim.y - 2, "Version " + VERSION_STRING, COLOR_DARKGREY, COLOR_BLACK, true);
+		OutputString(dim.x - 2, dim.y - 1, /*"Written "*/"by Carabus/Rafal99", COLOR_DARKGREY, COLOR_BLACK, true);
 
-		x = OutputHotkeysLine1(dim.y - 1);
-		OutputHotkeyString(x, dim.y - 1, "Basic Inventory   ", Screen::getKeyDisplay(A_INV_ADVINVENTORY), COLOR_LIGHTRED); //gps->dimy - 2
+		x =  OutputBottomHotkeysLine(dim.y - 1);
+		OutputHotkeyString(x, dim.y - 1, "Basic Inventory  ", Screen::getKeyDisplay(A_INV_ADVINVENTORY), COLOR_LIGHTRED); //gps->dimy - 2
 
+		bool allowMultiSelect = inventoryActions[ currentAction ].allowMultiSelect;
 		x = 0; y = dim.y - 2;
-		OutputString(x, y, "Actions:", COLOR_WHITE);
+		OutputHotkeyString(&x, y, "Move cursor", "\x18""\x19", COLOR_LIGHTGREEN, COLOR_GREY);
+		x += 3;
+		OutputHotkeyString(&x, y, "Select item", Screen::getKeyDisplay(interface_key::SELECT), COLOR_LIGHTGREEN, COLOR_GREY);
+		x += 2;
+		int selectRangeX = x;
+		OutputHotkeyString(&x, y, "Select range", Screen::getKeyDisplay(interface_key::SELECT_ALL), ( allowMultiSelect ? COLOR_LIGHTGREEN : COLOR_GREEN ), ( allowMultiSelect ? COLOR_GREY : COLOR_DARKGREY ));
+		x += 2;
+		OutputHotkeyString(&x, y, "Deselect all  ", Screen::getKeyDisplay(interface_key::DESELECT_ALL), COLOR_LIGHTGREEN, COLOR_GREY);
+
+		x = 0; y = dim.y - 3;
+		/*OutputHotkeyString(&x, y, "Expand/Collapse", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_C), COLOR_LIGHTGREEN, COLOR_GREY);
+		x += 3;
+		OutputHotkeyString(&x, y, "Expand/Collapse All", Screen::getKeyDisplay(interface_key::CUSTOM_CTRL_C), COLOR_LIGHTGREEN, COLOR_GREY);
+		x += 3;*/
+		x += 1;
+		OutputHotkeyString(&x, y, sortItems ? "Items are sorted" : "Items are not sorted", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_S), COLOR_LIGHTGREEN, sortItems ? COLOR_WHITE : COLOR_GREY);
+		//"Sort items" : "Do not sort items"
+		x = selectRangeX + 10;
+		OutputHotkeyString(&x, y, "Action on select", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_A), ( allowMultiSelect ? COLOR_LIGHTGREEN : COLOR_GREEN ), ( allowMultiSelect ? COLOR_WHITE : COLOR_DARKGREY ));
+
+		x = 0; y = dim.y - 4;
+		OutputString(&x, y, "Actions:", COLOR_WHITE);
 		x += 3;
 
 		for (int i = 0; i < NUM_ACTIONS; i++) {
-			OutputString(x, y, Screen::getKeyDisplay( inventoryActions[i].key ), COLOR_LIGHTGREEN);
-			OutputString(x, y, inventoryActions[i].label, (i == currentAction) ? ((currentAction == ACTION_VIEW) ? COLOR_LIGHTCYAN : COLOR_RED) : COLOR_GREY);
+			InventoryActionInfo& action = inventoryActions[i];
+			OutputString(&x, y, Screen::getKeyDisplay( action.key ), ( action.implemented ? COLOR_LIGHTGREEN : COLOR_GREY )); // COLOR_GREEN
+			OutputString(&x, y, action.label, (i == currentAction) ? COLOR_LIGHTCYAN : ( action.implemented ? COLOR_GREY : COLOR_DARKGREY ));
 			x += 3;
 		}
 
-		x = 0; y = dim.y - 4;
-		/*OutputHotkeyString(x, y, "Expand/Collapse", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_C), COLOR_LIGHTGREEN, COLOR_GREY);
-		x += 3;
-		OutputHotkeyString(x, y, "Expand/Collapse All", Screen::getKeyDisplay(interface_key::CUSTOM_CTRL_C), COLOR_LIGHTGREEN, COLOR_GREY);
-		x += 3;*/
-		OutputHotkeyString(x, y, sortItems ? "Items are sorted" : "Items are not sorted", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_S), COLOR_LIGHTGREEN, sortItems ? COLOR_WHITE : COLOR_GREY);
-		//"Sort items" : "Do not sort items"
-
-		OutputTile(79, dim.y - 5, '\xB3', COLOR_DARKGREY);
+		OutputTile(79, dim.y - 6, '\xB3', COLOR_DARKGREY);
 	}
 
 	void renderItemsList() {
@@ -787,37 +934,35 @@ public:
 		const int selectedX    = hotkeyX   + 2;
 		const int itemNameX    = selectedX + 2;
 		int scrollBarX   = itemsListRightX;
-		int actionFlagsX = scrollBarX   - 1 - NUM_DISPLAYED_ACTION_FLAGS;
-		int weightX      = actionFlagsX - 1 -  5;
+		int actionFlagsX = scrollBarX   - 2 - NUM_DISPLAYED_ACTION_FLAGS;
+		int weightX      = actionFlagsX - 2 -  5;
 		int bodyPartX    = weightX      - 1 - 24; //25
 		if (bodyPartX > 50)
 		{
 			bodyPartX    = 50;
 			weightX      = bodyPartX    + 1 + 24;
-			actionFlagsX = weightX      + 1 +  5;
-			scrollBarX   = actionFlagsX + 1 + NUM_DISPLAYED_ACTION_FLAGS;
+			actionFlagsX = weightX      + 2 +  5;
+			scrollBarX   = actionFlagsX + 2 + NUM_DISPLAYED_ACTION_FLAGS;
 		}
 
 		const SortableItemsVector& allItems = inventory->getAllItems();
-		const int first    = inventory->firstVisibleIndex;
 		const int maxRows  = itemsListBottomY + 1 - itemsListTopY;
-		const int itemRows = std::min( (int)allItems.size() - first, maxRows );
-
-		const int numHotkeyLetters = std::min( itemRows, 26 );
-		const int numHotkeyDigits  = std::min( itemRows - 26, 10 );
+		const int itemRows = std::min( (int)allItems.size() - firstIndex, maxRows );
+		int x, y;
 
 		// hotkeys
-		static Screen::Pen hotkeyPen (0, COLOR_LIGHTGREEN, COLOR_BLACK);
-		for (int i = 0; i < numHotkeyLetters; i++)
+		const int numItemHotkeys = std::min( itemRows, 26/* + 10*/ );
+		static Screen::Pen hotkeyPen   (0     , COLOR_LIGHTGREEN, COLOR_BLACK);
+		static Screen::Pen hotkeyBgPen ('\xFA', COLOR_LIGHTGREEN, COLOR_BLACK);
+		for (int i = 0; i < numItemHotkeys; i++)
 		{
-			Screen::paintTile (hotkeyPen.chtile(char('a' + i)), hotkeyX, itemsListTopY + i);
+			//char ch = char( (i < 26) ? ('a' + i) : ('0' + i - 26) );
+			char ch = char('a' + i);
+			Screen::paintTile( hotkeyPen.chtile(ch), hotkeyX, itemsListTopY + i );
 		}
-		if (numHotkeyDigits > 0)
+		if (numItemHotkeys < itemRows)
 		{
-			for (int i = 0; i < numHotkeyDigits; i++)
-			{
-				Screen::paintTile (hotkeyPen.chtile(char('0' + i)), hotkeyX, itemsListTopY + 26 + i);
-			}
+			Screen::fillRect( hotkeyBgPen, hotkeyX, itemsListTopY + numItemHotkeys, hotkeyX, itemsListTopY + itemRows - 1 );
 		}
 
 		static const Screen::Pen flagsBgPen ('\x2D', COLOR_DARKGREY, COLOR_BLACK); // '\xFA' '\x2D'
@@ -826,16 +971,18 @@ public:
 		//static const Screen::Pen dotPen ('.', COLOR_LIGHTGREEN, COLOR_BLACK);
 		static const Screen::Pen dotPen     ('\xC3', COLOR_GREEN, COLOR_BLACK);
 		static const Screen::Pen dotPenLast ('\xC0', COLOR_GREEN, COLOR_BLACK);
-		static const Screen::Pen linePen    ('\xC4', COLOR_GREEN, COLOR_BLACK);
+		static const Screen::Pen linePen    ('\x1A', COLOR_GREEN, COLOR_BLACK); // '\xC4' '\x1A'
 		for (int i = 0; i < itemRows; i++)
 		{
-			SortableItem* sItem = allItems[first + i];
+			SortableItem* sItem = allItems[ firstIndex + i ];
 			const int x = itemNameX + sItem->indent;
 			const int y = itemsListTopY + i;
 
+			int wx = weightX + 4;
+			OutputString (&wx, y, sItem->weightString, ( sItem->inv_item ? COLOR_YELLOW : COLOR_BROWN ), COLOR_BLACK, true);
 			OutputTile   (selectedX, y, '-', sItem->color);
-			OutputString (x, y, sItem->fullName, sItem->color);
-			OutputString ((const int&)bodyPartX, y, sItem->bodyPartName, sItem->color);
+			OutputLimitedString (x, y, bodyPartX - 2, sItem->fullName, sItem->color);
+			OutputLimitedString (bodyPartX, y, std::min( wx - 1, weightX - 2 ), sItem->bodyPartName, sItem->color);
 
 			// contained items tree
 			if (sItem->totalChildren > 0)
@@ -864,13 +1011,14 @@ public:
 		}
 
 		// column titles
-		int y = itemsListTopY - 1;
-		//OutputString ((const int&)(weightX - 1), y, "Weight", COLOR_WHITE, COLOR_BLACK);
-		OutputString ((const int&)(weightX - 1), y, "Weight", COLOR_BLACK, COLOR_GREY);
+		y = itemsListTopY - 1;
+		OutputString (weightX - 1, y, "Weight", COLOR_WHITE, COLOR_BLACK); //weightX - 1
+		//OutputString (weightX - 1, y, "Weight", COLOR_BLACK, COLOR_GREY);
 
-		possibleActionFlags[ POSSIBLE_EAT      ].OutputFlagTile (actionFlagsX, y, COLOR_GREY);
-		possibleActionFlags[ POSSIBLE_INTERACT ].OutputFlagTile (actionFlagsX, y, COLOR_GREY);
-		possibleActionFlags[ POSSIBLE_WEAR     ].OutputFlagTile (actionFlagsX, y, COLOR_GREY);
+		const int8_t actionFlagsBgColor = COLOR_BLACK; //COLOR_GREY
+		possibleActionFlags[ POSSIBLE_EAT      ].OutputFlagTile (actionFlagsX, y, actionFlagsBgColor);
+		possibleActionFlags[ POSSIBLE_INTERACT ].OutputFlagTile (actionFlagsX, y, actionFlagsBgColor);
+		possibleActionFlags[ POSSIBLE_WEAR     ].OutputFlagTile (actionFlagsX, y, actionFlagsBgColor);
 
 		// scrollbar
 		static const Screen::Pen scrollbarPen ('\xBA', COLOR_DARKGREY, COLOR_BLACK); // '\xB3' '\xBA'
@@ -883,18 +1031,29 @@ public:
 		if (firstIndexRange > 0)
 		{
 			int buttonPos = 0;
-			if (first > 0)
+			if (firstIndex > 0)
 			{
 				int scrollBarRange = maxRows - 3;
-				buttonPos = 1 + first * (scrollBarRange - 1) / firstIndexRange;
+				buttonPos = 1 + std::min( firstIndex, firstIndexRange ) * (scrollBarRange - 1) / firstIndexRange;
 			}
 
 			OutputTile (scrollBarX, itemsListTopY + 1 + buttonPos, '\xF0', COLOR_YELLOW, COLOR_BROWN); // '\xF0' '\xFE'
 		}
 
-		std::stringstream ss;
-		ss << "Total items: " << allItems.size() << " ";
-		OutputString(0, dim.y - 5, ss.str(), COLOR_GREY);
+		x = 0; y = dim.y - 6;
+		OutputString(&x, y, "Total items: ", COLOR_WHITE);
+		OutputString(&x, y, intToString( allItems.size() ), COLOR_LIGHTGREEN);
+		x += 4;
+		OutputString(&x, y, "Weight:", COLOR_WHITE);
+		x += 2;
+		OutputString(&x, y, "Total: ", COLOR_GREY);
+		OutputString(&x, y, inventory->totalWeightString, COLOR_YELLOW);
+		x += 3;
+		OutputString(&x, y, "Effective: ", COLOR_GREY);
+		OutputString(&x, y, inventory->effWeightString, COLOR_YELLOW);
+		x += 3;
+		OutputString(&x, y, "Can carry: ", COLOR_GREY);
+		OutputString(&x, y, inventory->allowedWeightString, COLOR_LIGHTGREEN);
 	}
 
 
@@ -910,7 +1069,7 @@ public:
 	static int getTabHotkeyStringX() {
 		if (tabHotkeyStringX == -1)
 		{
-			tabHotkeyStringX = OutputHotkeysLine1(-1);
+			tabHotkeyStringX =  OutputBottomHotkeysLine(-1);
 		}
 		return tabHotkeyStringX;
 	}
@@ -918,14 +1077,17 @@ public:
 private:
 	static int tabHotkeyStringX;
 
-	static int OutputHotkeysLine1 (int y)
+	static int OutputBottomHotkeysLine (int y)
 	{
 		int x = 0;
-		OutputHotkeyString(x, y, "to view other pages.",
-			Screen::getKeyDisplay(interface_key::SECONDSCROLL_PAGEUP) + Screen::getKeyDisplay(interface_key::SECONDSCROLL_PAGEDOWN),
+		OutputHotkeyString(&x, y, "to view other pages.",
+			Screen::getKeyDisplay(interface_key::SECONDSCROLL_UP) +
+			Screen::getKeyDisplay(interface_key::SECONDSCROLL_DOWN) +
+			Screen::getKeyDisplay(interface_key::SECONDSCROLL_PAGEUP) +
+			Screen::getKeyDisplay(interface_key::SECONDSCROLL_PAGEDOWN),
 			COLOR_LIGHTGREEN, COLOR_GREY, false);
 		x += 2;
-		OutputHotkeyString(x, y, "when done.",
+		OutputHotkeyString(&x, y, "when done.",
 			Screen::getKeyDisplay(interface_key::LEAVESCREEN),
 			COLOR_LIGHTGREEN, COLOR_GREY, false);
 		x += 3;
@@ -938,6 +1100,7 @@ bool ViewscreenAdvInventory::sortItems = false; //true;
 InventoryAction ViewscreenAdvInventory::currentAction = ACTION_VIEW;
 Inventory* ViewscreenAdvInventory::inventory = nullptr;
 Inventory*& SortableItem::inventory = ViewscreenAdvInventory::inventory;
+int ViewscreenAdvInventory::firstIndex = 0;
 int ViewscreenAdvInventory::tabHotkeyStringX = -1;
 
 
@@ -1018,14 +1181,17 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
 		//OutputString(0, 1, enum_item_key(ui_advmode->menu).append("  "));
 
 		//std::stringstream ss;
-		//ss << "0x" << std::hex << (int)Gui::getCurViewscreen() << " ";
+		//ss << "0x" << std::hex << ui_advmode << "  0x" << (ui_advmode + 1) << " ";
+		//OutputString(0, 1, ss.str());
+		//std::stringstream ss;
+		//ss << "0x" << std::hex << Gui::getCurViewscreen(true) << " ";
 		//OutputString(0, 1, ss.str());
 
 		//std::stringstream ss;
-		//ss << "0x" << std::hex << (int)getPlayerUnit() << " ";
+		//ss << "0x" << std::hex << getPlayerUnit() << " ";
 		//OutputString(0, 1, ss.str());
 		//ss.clear();
-		//ss << "0x" << std::hex << (int)Gui::getSelectedUnit(*out, true) << " ";
+		//ss << "0x" << std::hex << Gui::getSelectedUnit(*out, true) << " ";
 		//OutputString(0, 2, ss.str());
 
 		switch (ui_advmode->menu)
