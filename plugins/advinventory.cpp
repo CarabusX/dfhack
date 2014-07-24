@@ -1,7 +1,7 @@
 #include <string>
 #include <vector>
 #include <set>
-//#include <algorithm>
+#include <algorithm>
 
 #include <VTableInterpose.h>
 
@@ -9,6 +9,7 @@
 #include "Core.h"
 #include "DataDefs.h"
 #include "Export.h"
+#include "MiscUtils.h"
 #include "PluginManager.h"
 #include <modules/Gui.h>
 #include <modules/Screen.h>
@@ -17,6 +18,7 @@
 #include "df/viewscreen_dungeonmodest.h"
 #include "df/ui_advmode.h"
 #include "df/interface_key.h"
+#include "df/nemesis_record.h"
 #include "df/unit.h"
 #include "df/unit_inventory_item.h"
 #include "df/item.h"
@@ -30,6 +32,7 @@
 #include "df/itemdef_armorst.h"
 #include "df/itemdef_glovesst.h"
 #include "df/itemdef_shoesst.h"
+#include "df/general_ref_contains_itemst.h"
 
 using std::string;
 using std::vector;
@@ -40,6 +43,7 @@ using namespace df::enums;
 
 using df::global::gps;
 using df::global::ui_advmode;
+using df::global::world;
 
 
 color_ostream* out;
@@ -76,17 +80,31 @@ void OutputHotkeyString(const int &x, int y, const char *text, const std::string
 }
 
 
+df::unit* getPlayerUnit()
+{
+    df::nemesis_record* playerNemesis = vector_get(world->nemesis.all, ui_advmode->player_id);
+
+    if (!playerNemesis)
+        return nullptr;
+
+	return playerNemesis->unit;
+}
+
+
 struct SortableItem {
 	const df::unit_inventory_item *const inv_item;
 	df::item *const item;
 
 	int8_t color;
-	const int8_t indent;
+	int8_t indent;
 	bool collapsed;
 
 	uint32_t sortingKey;
 	vector< SortableItem* >* containedItems;
 	vector< SortableItem* >* containedItemsSorted;
+
+	inline vector< SortableItem* >* getContainedItems();
+	inline static void incrementTotalItems();
 
 
 	SortableItem (const df::unit_inventory_item* _inv_item)
@@ -94,6 +112,9 @@ struct SortableItem {
 	{
 		sortingKey = 0;
 		calculateKey_Mode_ItemType_BodyPart();
+
+		incrementTotalItems();
+		initContainer();
 	}
 
 	SortableItem (df::item* _item, int8_t _indent)
@@ -101,9 +122,82 @@ struct SortableItem {
 	{
 		color = COLOR_LIGHTGREEN;
 		sortingKey = 0;
-		calculateKey_ItemType(item);
+		calculateKey_ItemType();
+
+		incrementTotalItems();
+		initContainer();
 	}
 
+	~SortableItem()
+	{
+		if (containedItems) {
+			for (auto it = containedItems->begin(); it != containedItems->end(); ++it)
+			{
+				delete *it;
+			}
+
+			delete containedItems;
+			delete containedItemsSorted;
+		}
+	}
+
+	void initContainer()
+	{
+		vector< SortableItem* >*& tempVector = createTempVector();
+		containedItems = tempVector;
+		tempVector     = nullptr;
+
+		int8_t newIndent = indent + 2;
+
+		auto& refs = item->general_refs;
+		//for (auto& ref : refs)
+		for (auto it = refs.begin(); it != refs.end(); ++it)
+		{
+			auto& ref = *it;
+
+			if (!strict_virtual_cast<df::general_ref_contains_itemst>(ref))
+				continue;
+
+			df::item *childItem = ref->getItem();
+			if (!childItem) continue;
+
+			containedItems->push_back( new SortableItem(childItem, newIndent) );
+		}
+
+		if (!containedItems->empty()) {
+			indent = newIndent;
+
+			containedItemsSorted = new vector< SortableItem* > (*containedItems);
+			std::sort (containedItemsSorted->begin(), containedItemsSorted->end(), sortingFunction);
+		} else {
+			tempVector = containedItems; // return vector for reuse
+			containedItems       = nullptr;
+			containedItemsSorted = nullptr;
+		}
+	}
+
+	static vector< SortableItem* >*& createTempVector()
+	{
+		static vector< SortableItem* >* tempVector = nullptr;
+		if (!tempVector)
+		{
+			tempVector = new vector< SortableItem* >();
+		}
+		return tempVector;
+	}
+
+
+	static bool sortingFunction (SortableItem* a, SortableItem* b)
+	{
+		return (a->sortingKey < b->sortingKey);
+	}
+
+	// sortingKey consists of:
+	//  2 bits - inventory mode
+	//  4 bits - item type
+	// 16 bits - body part id
+	//  2 bits - layer
+	//  8 bits - layer permit
 	void calculateKey_Mode_ItemType_BodyPart() {
 		uint32_t key;
 
@@ -131,15 +225,15 @@ struct SortableItem {
 
 		sortingKey |= (key << (4 + 16 + 2 + 8)); //30
 
-		calculateKey_ItemType(item);
+		calculateKey_ItemType(); //26
 
 		key = (uint32_t)( inv_item->body_part_id );
 		sortingKey |= (key << (2 + 8)); //10
 
-		calculateKey_Layer(item);
+		calculateKey_Layer(); //0
 	}
 
-	void calculateKey_ItemType (df::item *item) {
+	void calculateKey_ItemType() {
 		uint32_t key = getKey_ItemType(item);
 		sortingKey |= (key << (16 + 2 + 8)); //26
 	}
@@ -168,7 +262,7 @@ struct SortableItem {
 			case COIN:
 				return 8;
 			default:
-				return 9; // other items
+				return 9;  // other items
 			case FLASK:
 				return 10;
 			case QUIVER:
@@ -177,12 +271,12 @@ struct SortableItem {
 				return 12;
 			case BOX:
 			case BIN:
-				return 13;  //containers at the end
+				return 13;  //containers go at the end
 		}
 	}
 
 
-	void calculateKey_Layer (df::item *item) {
+	void calculateKey_Layer() {
 		df::armor_properties* props = getArmorProperties(item);
 
 		if (!props)
@@ -251,13 +345,39 @@ struct SortableItem {
 struct Inventory {
 	vector< SortableItem* > items;
 	vector< SortableItem* > itemsSorted;
+
+	inline vector< SortableItem* >& getItems();
+
 	int32_t totalItems;
+	int32_t firstVisibleIndex;
 
 
-	Inventory()
-		: totalItems(0)
+	Inventory()	: totalItems(0), firstVisibleIndex(0) {}
+
+	void loadItems()
 	{
+		df::unit *playerUnit = getPlayerUnit();
+		if (!playerUnit)
+			return;
 
+		auto &unitInventory = playerUnit->inventory;
+
+		for (auto it = unitInventory.begin(); it != unitInventory.end(); ++it)
+		{
+			const df::unit_inventory_item* inv_item = *it;
+			items.push_back( new SortableItem(inv_item) );
+		}
+
+		itemsSorted = items;
+		std::sort (itemsSorted.begin(), itemsSorted.end(), SortableItem::sortingFunction);
+	}
+
+	~Inventory()
+	{
+		for (auto it = items.begin(); it != items.end(); ++it)
+		{
+			delete *it;
+		}
 	}
 };
 
@@ -297,8 +417,15 @@ InventoryActionInfo inventoryActions [NUM_ACTIONS] = {
 class ViewscreenAdvInventory : public dfhack_viewscreen
 {
 public:
+	static const int itemsListTopY    =  2;
+	static const int itemsListBottomY = -7;
+	static const int itemsListLeftX   =  0;
+	static const int itemsListRightX  = -1;
+
 	static bool isActive;
+	static bool sortItems;
 	static InventoryAction currentAction;
+	static Inventory* inventory;
 
 
 	static void show()
@@ -309,7 +436,24 @@ public:
 			instance->parent = nullptr;
 		Screen::show(instance);*/
 
-		Screen::show( new ViewscreenAdvInventory() );
+		ViewscreenAdvInventory* screen = new ViewscreenAdvInventory();
+
+		if (!inventory)
+		{
+			inventory = new Inventory();
+			inventory->loadItems();
+		}
+
+		Screen::show(screen);
+	}
+
+	static void onLeaveScreen()
+	{
+		if (inventory)
+		{
+			delete inventory;
+			inventory = nullptr;
+		}
 	}
 
     void feed(set<df::interface_key> *input)
@@ -352,10 +496,19 @@ public:
 			}*/
 
             return;
-        } else {
-			for (int i = 0; i < NUM_ACTIONS; i++) {
-				if (input->count(inventoryActions[i].key)) {
-					if (i != currentAction) {
+        }
+		else if (input->count(interface_key::CUSTOM_SHIFT_S))
+        {
+			sortItems = !sortItems;
+        }
+		else
+		{
+			for (int i = 0; i < NUM_ACTIONS; i++)
+			{
+				if (input->count(inventoryActions[i].key))
+				{
+					if (i != currentAction)
+					{
 						currentAction = (InventoryAction)i;
 					}
 					return;
@@ -377,12 +530,23 @@ public:
 		int x, y;
 		auto dim = Screen::getWindowSize();
 		OutputString(0, 0, "Advanced Inventory");
-		OutputString(dim.x - 2, 0, "DFHack", COLOR_LIGHTMAGENTA, COLOR_BLACK, true);
 
+		std::stringstream stream;
+		stream << "Num items: " << inventory->totalItems << " ";
+		OutputString(0, 1, stream.str());
+
+		OutputString(dim.x - 2, 0, "DFHack", COLOR_LIGHTMAGENTA, COLOR_BLACK, true);
 		OutputString(dim.x - 2, dim.y - 1, "Written by Carabus/Rafal99", COLOR_DARKGREY, COLOR_BLACK, true);
 
 		x = OutputHotkeysLine1(dim.y - 1);
 		OutputHotkeyString(x, dim.y - 1, "Basic Inventory   ", Screen::getKeyDisplay(interface_key::CHANGETAB), COLOR_LIGHTRED); //gps->dimy - 2
+
+		x = 0; y = dim.y - 2;
+		OutputHotkeyString(x, y, "Expand/Collapse", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_C), COLOR_LIGHTGREEN, COLOR_GREY);
+		x += 3;
+		OutputHotkeyString(x, y, "Expand/Collapse All", Screen::getKeyDisplay(interface_key::CUSTOM_CTRL_C), COLOR_LIGHTGREEN, COLOR_GREY);
+		x += 3;
+		OutputHotkeyString(x, y, sortItems ? "Sort items" : "Do not sort items", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_S), COLOR_LIGHTGREEN, sortItems ? COLOR_WHITE : COLOR_GREY);
 
 		x = 0; y = dim.y - 4;
 		OutputString(x, y, "Actions:", COLOR_WHITE);
@@ -390,7 +554,7 @@ public:
 
 		for (int i = 0; i < NUM_ACTIONS; i++) {
 			OutputString(x, y, Screen::getKeyDisplay( inventoryActions[i].key ), COLOR_LIGHTGREEN);
-			OutputString(x, y, inventoryActions[i].label, (i == currentAction) ? ((currentAction == ACTION_VIEW) ? COLOR_LIGHTCYAN : COLOR_LIGHTRED) : COLOR_GREY);
+			OutputString(x, y, inventoryActions[i].label, (i == currentAction) ? ((currentAction == ACTION_VIEW) ? COLOR_LIGHTCYAN : COLOR_RED) : COLOR_GREY);
 			x += 3;
 		}
 
@@ -427,14 +591,31 @@ private:
 		OutputHotkeyString(x, y, "when done.",
 			Screen::getKeyDisplay(interface_key::LEAVESCREEN),
 			COLOR_LIGHTGREEN, COLOR_GREY, false);
-		x += 2;
+		x += 3;
 		return x;
 	}
 };
 
-bool ViewscreenAdvInventory::isActive = false;
+bool ViewscreenAdvInventory::isActive  = false;
+bool ViewscreenAdvInventory::sortItems = true;
 InventoryAction ViewscreenAdvInventory::currentAction = ACTION_VIEW;
+Inventory* ViewscreenAdvInventory::inventory = nullptr;
 int ViewscreenAdvInventory::tabHotkeyStringX = -1;
+
+
+inline vector< SortableItem* >* SortableItem::getContainedItems()
+{
+	return (ViewscreenAdvInventory::sortItems ? containedItemsSorted : containedItems);
+}
+
+inline vector< SortableItem* >& Inventory::getItems()
+{
+	return (ViewscreenAdvInventory::sortItems ? itemsSorted : items);
+}
+
+inline void SortableItem::incrementTotalItems() {
+	ViewscreenAdvInventory::inventory->totalItems++;
+}
 
 
 DFHACK_PLUGIN("advinventory");
@@ -462,6 +643,10 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
 					ViewscreenAdvInventory::isActive = true;
 					ViewscreenAdvInventory::show();
 					return;
+				}
+				else if (input->count(interface_key::LEAVESCREEN))
+				{
+					ViewscreenAdvInventory::onLeaveScreen();
 				}
 				break;
 			default:
@@ -502,6 +687,7 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
 			{
 				int x = ViewscreenAdvInventory::getTabHotkeyStringX();
 				OutputHotkeyString(x, 24, "Advanced Inventory", Screen::getKeyDisplay(interface_key::CHANGETAB), COLOR_LIGHTRED); // gps->dimy - 2
+				OutputString(79, 23, "|");
 				break;
 			}
 			default:
