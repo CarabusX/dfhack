@@ -1,3 +1,8 @@
+#include <string>
+#include <set>
+
+#include <VTableInterpose.h>
+
 #include "Console.h"
 #include "Core.h"
 #include "DataDefs.h"
@@ -5,38 +10,51 @@
 #include "PluginManager.h"
 #include <modules/Screen.h>
 
-#include <VTableInterpose.h>
-
 #include "df/world.h"
 #include "df/viewscreen_dungeonmodest.h"
 #include "df/ui_advmode.h"
+#include "df/interface_key.h"
+
+using std::string;
+using std::set;
 
 using namespace DFHack;
 using namespace df::enums;
 
 using df::global::gps;
 using df::global::ui_advmode;
-using df::enums::ui_advmode_menu;
 
 
-/*void OutputString(int8_t color, int &x, int y, const std::string &text)
+void OutputString(int &x, int y, const std::string &text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK, bool rightAligned = false)
 {
-    Screen::paintString(Screen::Pen(' ', color, 0), x, y, text);
-    x += text.length();
-}*/
-
-void OutputString(int &x, int y, const std::string &text, int8_t color = COLOR_WHITE, const UIColor bg_color = COLOR_BLACK)
-{
-    Screen::paintString(Screen::Pen(' ', color, bg_color), x, y, text);
-    x += text.length();
+	int leftX = x;
+	if (rightAligned) {
+		leftX -= (text.length() - 1);
+	} else {
+		x += text.length();
+	}
+    Screen::paintString(Screen::Pen(' ', color, bg_color), leftX, y, text); //
 }
 
-void OutputHotkeyString(int &x, int y, const char *text, const char *hotkey, int8_t text_color = COLOR_WHITE, int8_t hotkey_color = COLOR_LIGHTGREEN)
+inline void OutputString(const int &x, int y, const std::string &text, int8_t color = COLOR_WHITE, int8_t bg_color = COLOR_BLACK, bool rightAligned = false)
 {
-    OutputString(hotkey_color, x, y, hotkey);
-    string display(": ");
-    display.append(text);
-    OutputString(text_color, x, y, display, newline, left_margin);
+	int _x = x;
+	OutputString(_x, y, text, color, bg_color, rightAligned);
+}
+
+void OutputHotkeyString(int &x, int y, const char *text, const std::string &hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE)
+{
+    OutputString(x, y, hotkey, hotkey_color);
+    //string display(": ");
+    //display.append(text);
+	x++;
+    OutputString(x, y, string(text), text_color);
+}
+
+void OutputHotkeyString(const int &x, int y, const char *text, const std::string &hotkey, int8_t hotkey_color = COLOR_LIGHTGREEN, int8_t text_color = COLOR_WHITE)
+{
+	int _x = x;
+	OutputHotkeyString(_x, y, text, hotkey, hotkey_color, text_color);
 }
 
 
@@ -57,6 +75,7 @@ public:
         {
             input->clear();
             Screen::dismiss(this);
+			ui_advmode->menu = ui_advmode_menu::Default;
             return;
         }
 		else if (input->count(interface_key::CHANGETAB))
@@ -64,7 +83,32 @@ public:
 			input->clear();
             Screen::dismiss(this);
 			ui_advmode->menu = ui_advmode_menu::Inventory;
+            //Screen::dismiss(Gui::getCurViewscreen(true));
+            //Screen::show(new ViewscreenStocks());
 			//Screen::show(df::viewscreen *screen, df::viewscreen *before)
+			//Screen::show(new ViewscreenChooseMaterial(planner.getDefaultItemFilterForType(type)));
+			//Gui::resetDwarfmodeView(true);
+            //send_key(interface_key::D_VIEWUNIT);
+
+			/*if (VIRTUAL_CAST_VAR(unitlist, df::viewscreen_unitlistst, parent))
+			{
+				if (events->count(interface_key::UNITJOB_VIEW) || events->count(interface_key::UNITJOB_ZOOM_CRE))
+				{
+					for (int i = 0; i < unitlist->units[unitlist->page].size(); i++)
+					{
+						if (unitlist->units[unitlist->page][i] == units[input_row]->unit)
+						{
+							unitlist->cursor_pos[unitlist->page] = i;
+							unitlist->feed(events);
+							if (Screen::isDismissed(unitlist))
+								Screen::dismiss(this);
+							else
+								do_refresh_names = true;
+							break;
+						}
+					}
+				}
+			}*/
             return;
         }
     }
@@ -77,13 +121,42 @@ public:
         dfhack_viewscreen::render(); //calls check_resize();
 
         Screen::clear();
-        Screen::drawBorder("  Advanced Inventory  ");
+        //Screen::drawBorder("  Advanced Inventory  ");
 
-		OutputHotkeyString(40, gps->dimy - 2, "Basic Inventory", "Tab");
+		OutputString(0, 0, "Advanced Inventory");
+		OutputString(gps->dimx - 1, 0, " DFHack ", COLOR_LIGHTMAGENTA, COLOR_BLACK, true);
+
+		OutputString(gps->dimx - 1, gps->dimy - 1, "Written by Carabus/Rafal99", COLOR_DARKGREY, COLOR_BLACK, true);
+
+		int x = OutputHotkeysLine1(gps->dimy - 1);
+		OutputHotkeyString(x, gps->dimy - 1, "Basic Inventory", Screen::getKeyDisplay(interface_key::CHANGETAB), COLOR_LIGHTRED); //gps->dimy - 2
 	}
 
-    void onShow() {};
+	string getFocusString() { return "adv_inventory"; }
+    //void onShow() {};
+
+	static int getTabHotkeyStringX() {
+		if (tabHotkeyStringX == -1) {
+			tabHotkeyStringX = OutputHotkeysLine1(-1);
+		}
+		return tabHotkeyStringX;
+	}
+
+private:
+	static int tabHotkeyStringX;
+
+	static int OutputHotkeysLine1 (int y)
+	{
+		int x = 0;
+		OutputHotkeyString(x, y, "to view other pages.", Screen::getKeyDisplay(interface_key::SECONDSCROLL_PAGEUP) + Screen::getKeyDisplay(interface_key::SECONDSCROLL_PAGEDOWN), COLOR_LIGHTGREEN, COLOR_GREY);
+		x += 2;
+		OutputHotkeyString(x, y, "when done.", Screen::getKeyDisplay(interface_key::LEAVESCREEN), COLOR_LIGHTGREEN, COLOR_GREY);
+		x += 2;
+		return x;
+	}
 };
+
+int ViewscreenAdvInventory::tabHotkeyStringX = -1;
 
 
 struct viewscreen_advinventory : df::viewscreen_dungeonmodest {
@@ -122,17 +195,20 @@ struct viewscreen_advinventory : df::viewscreen_dungeonmodest {
     {
 		INTERPOSE_NEXT(render)();
 
-		Screen::Pen pen(' ', COLOR_WHITE, COLOR_BLACK);
-		Screen::paintString(pen, 0, 0, enum_item_key(ui_advmode->menu));
+		//OutputString(0, 0, enum_item_key(ui_advmode->menu).append("  "));
 
 		using namespace ui_advmode_menu;
 
         switch (ui_advmode->menu)
         {
 			case Inventory:
+			{
 				//auto dim = Screen::getWindowSize();
-				OutputHotkeyString(40, gps->dimy - 2, "Advanced Inventory", "Tab");
+
+				int x = ViewscreenAdvInventory::getTabHotkeyStringX();
+				OutputHotkeyString(x, 24, "Advanced Inventory", Screen::getKeyDisplay(interface_key::CHANGETAB), COLOR_LIGHTRED); // gps->dimy - 2
 				break;
+			}
 			default:
 				return;
         }
@@ -140,6 +216,7 @@ struct viewscreen_advinventory : df::viewscreen_dungeonmodest {
     }
 };
 
+IMPLEMENT_VMETHOD_INTERPOSE(viewscreen_advinventory, feed);
 IMPLEMENT_VMETHOD_INTERPOSE(viewscreen_advinventory, render);
 
 
