@@ -23,19 +23,38 @@
 #include "df/interface_key.h"
 #include "df/nemesis_record.h"
 #include "df/unit.h"
+#include "df/creature_raw.h"
 #include "df/caste_body_info.h"
 #include "df/unit_inventory_item.h"
 #include "df/item.h"
-#include "df/item_helmst.h"
-#include "df/item_pantsst.h"
+#include "df/item_ammost.h"
 #include "df/item_armorst.h"
+#include "df/item_foodst.h"
 #include "df/item_glovesst.h"
+#include "df/item_helmst.h"
+#include "df/item_instrumentst.h"
+#include "df/item_pantsst.h"
+#include "df/item_shieldst.h"
 #include "df/item_shoesst.h"
-#include "df/itemdef_helmst.h"
-#include "df/itemdef_pantsst.h"
+#include "df/item_siegeammost.h"
+#include "df/item_toolst.h"
+#include "df/item_toyst.h"
+#include "df/item_trapcompst.h"
+#include "df/item_weaponst.h"
+#include "df/itemdef_ammost.h"
 #include "df/itemdef_armorst.h"
+#include "df/itemdef_foodst.h"
 #include "df/itemdef_glovesst.h"
+#include "df/itemdef_helmst.h"
+#include "df/itemdef_instrumentst.h"
+#include "df/itemdef_pantsst.h"
+#include "df/itemdef_shieldst.h"
 #include "df/itemdef_shoesst.h"
+#include "df/itemdef_siegeammost.h"
+#include "df/itemdef_toolst.h"
+#include "df/itemdef_toyst.h"
+#include "df/itemdef_trapcompst.h"
+#include "df/itemdef_weaponst.h"
 #include "df/general_ref_contains_itemst.h"
 
 using std::string;
@@ -50,13 +69,16 @@ using df::global::ui_advmode;
 using df::global::world;
 
 
+static int32_t *const ui_item_view_page = (int32_t*)( (char*)df::global::ui_unit_view_mode + 8 );
+
+
 DFHACK_PLUGIN("advinventory");
 DFHACK_PLUGIN_IS_ENABLED(is_enabled);
 
 const string VERSION_STRING = "0.1.0";
 
 
-color_ostream* out;
+static color_ostream* out;
 
 inline string intToString (int i)
 {
@@ -161,53 +183,28 @@ string getItemFullName (df::item *item)
 }
 
 
-df::armor_properties* getArmorProperties (df::item *item) {
-	df::armor_properties* props = nullptr;
-
+const df::armor_properties* getItemArmorProperties (df::item *item) {
 	using namespace df::enums::item_type;
 
 	switch (item->getType()) {
-		case HELM:
-		{
-			auto armorItem = virtual_cast<df::item_helmst>(item);
-			if (armorItem)
-				props = &armorItem->subtype->props;
-			break;
-		}
-		case ARMOR:
-		{
-			//auto armorItem = (df::item_armorst*)item;
-			auto armorItem = virtual_cast<df::item_armorst>(item);
-			if (armorItem)
-				props = &armorItem->subtype->props;
-			break;
-		}
-		case PANTS:
-		{
-			auto armorItem = virtual_cast<df::item_pantsst>(item);
-			if (armorItem)
-				props = &armorItem->subtype->props;
-			break;
-		}
-		case GLOVES:
-		{
-			auto armorItem = virtual_cast<df::item_glovesst>(item);
-			if (armorItem)
-				props = &armorItem->subtype->props;
-			break;
-		}
-		case SHOES:
-		{
-			auto armorItem = virtual_cast<df::item_shoesst>(item);
-			if (armorItem)
-				props = &armorItem->subtype->props;
-			break;
-		}
-		default:
-			break;
+		//auto armorItem = (df::item_armorst*)item;
+		#define GET_ITEM_PROPS(ITEM_TYPE, ITEM_CLASS) \
+			case ITEM_TYPE: \
+			{ \
+				auto classItem = virtual_cast<df::ITEM_CLASS>(item); \
+				if (classItem) return (&classItem->subtype->props); \
+			}
+
+		GET_ITEM_PROPS (HELM  , item_helmst)
+		GET_ITEM_PROPS (ARMOR , item_armorst)
+		GET_ITEM_PROPS (PANTS , item_pantsst)
+		GET_ITEM_PROPS (GLOVES, item_glovesst)
+		GET_ITEM_PROPS (SHOES , item_shoesst)
+
+		#undef GET_ITEM_PROPS
 	}
 
-	return props;
+	return nullptr;
 }
 
 
@@ -267,19 +264,23 @@ struct SortableItem {
 	//bool collapsed;
 	bool possibleActions [NUM_POSSIBLE_ACTIONS];
 
-	uint32_t sortingKey;
 	SortableItemsVector* containedItems;
 	SortableItemsVector* containedItemsSorted;
 
+	uint32_t sortingKey;
+	string subtypeName;
+	string* materialName;
+	int16_t itemQuality;
+	int32_t itemValue;
+
 	//inline const SortableItemsVector* getContainedItems() const;
 	inline void addToAllItems(); // not const because can't add const SortableItem* to vector
-	void addToAllItemsSorted();
+	static void sortAndAddToAllItems (SortableItemsVector& itemsVectorSorted);
 
 
 	SortableItem (const df::unit_inventory_item* _inv_item)	:
-		inv_item(_inv_item), item(_inv_item->item),
-		treeString(nullptr), treeStringSorted(nullptr),
-		indent(0), totalChildren(0)/*, collapsed(false)*/
+		inv_item(_inv_item), item(_inv_item->item),	indent(0),
+		fullName( getItemFullName(item) )
 	{
 		getItemBodyPartName(); // before adding to allItems so flasks won't iterate over themselves
 
@@ -289,9 +290,8 @@ struct SortableItem {
 	}
 
 	SortableItem (df::item* _item, int8_t _indent) :
-		inv_item(nullptr), item(_item),
-		treeString(nullptr), treeStringSorted(nullptr),
-		indent(_indent), totalChildren(0)/*, collapsed(false)*/
+		inv_item(nullptr), item(_item), indent(_indent),
+		fullName( getItemFullName(item) )
 	{
 		init();
 
@@ -302,13 +302,18 @@ struct SortableItem {
 	{
 		std::fill_n( possibleActions, (int)NUM_POSSIBLE_ACTIONS, false );
 
+		treeString = nullptr;
+		treeStringSorted = nullptr;
+		//collapsed = false;
+
 		sortingKey = 0;
 		calculateKey_ItemType();
+		getItemSortingData();
 
 		addToAllItems();
-		initContainer();
 
-		fullName = getItemFullName(item);
+		totalChildren = 0;
+		initContainer();
 
 		if (totalChildren > 0)
 		{
@@ -325,6 +330,10 @@ struct SortableItem {
 		if (treeString) {
 			delete treeString;
 			delete treeStringSorted;
+		}
+
+		if (materialName) {
+			delete materialName;
 		}
 
 		if (containedItems) {
@@ -369,7 +378,6 @@ struct SortableItem {
 			totalChildren += containedItems->size();
 
 			containedItemsSorted = new SortableItemsVector (*containedItems);
-			std::sort (containedItemsSorted->begin(), containedItemsSorted->end(), sortingFunction);
 		}
 		else
 		{
@@ -492,9 +500,63 @@ struct SortableItem {
 	}
 
 
-	static bool sortingFunction (const SortableItem* a, const SortableItem* b)
+	static inline bool sortingLess (const SortableItem* a, const SortableItem* b)
 	{
-		return (a->sortingKey < b->sortingKey);
+		return (sortingCompare(a, b) < 0);
+	}
+
+	static int32_t sortingCompare (const SortableItem* a, const SortableItem* b)
+	{
+		int32_t cmp;
+		
+		cmp = a->sortingKey - b->sortingKey; // ascending
+		if (cmp != 0) return cmp;
+
+		cmp = a->subtypeName.compare(b->subtypeName);
+		if (cmp != 0) return cmp;
+
+		if (a->materialName) {
+			cmp = a->materialName->compare(*b->materialName);
+			if (cmp != 0) return cmp;
+		}
+
+		cmp = b->itemQuality - a->itemQuality; // descending
+		if (cmp != 0) return cmp;
+
+		cmp = b->itemValue - a->itemValue; // descending
+		return cmp;
+	}
+
+
+	void getItemSortingData()
+	{
+		item->getItemDescription(&subtypeName, 0);
+		materialName = nullptr;
+		itemQuality = item->getQuality();
+		itemValue = Items::getValue(item);
+
+		if (item->getType() == df::enums::item_type::VERMIN) {
+			return;
+		}
+
+		MaterialInfo mi (item);
+
+		const string& _materialName = mi.material->state_name[ matter_state::Solid ];
+		string fullMaterialName = _materialName;
+
+		if (mi.creature) {
+			fullMaterialName = mi.creature->name[0] + " " + fullMaterialName;
+		} else if (mi.plant) {
+			fullMaterialName = mi.plant->name + " " + fullMaterialName;
+		}
+
+		size_t pos = subtypeName.find (fullMaterialName);
+		if (pos != string::npos)  //if (subtypeName.compare(0, len, fullMaterialName) == 0)
+		{
+			size_t len = fullMaterialName.length();
+			subtypeName.erase(0, pos + len + 1);
+			materialName = new string (_materialName);
+		}
 	}
 
 
@@ -504,7 +566,8 @@ struct SortableItem {
 	// 16 bits - body part id
 	//  2 bits - layer
 	//  8 bits - layer permit
-	void calculateKey_Mode_BodyPart() {
+	void calculateKey_Mode_BodyPart()
+	{
 		using df::unit_inventory_item;
 
 		uint32_t key;
@@ -538,7 +601,8 @@ struct SortableItem {
 		sortingKey |= (key << (2 + 8)); //10
 	}
 
-	void calculateKey_ItemType() {
+	void calculateKey_ItemType()
+	{
 		uint32_t key = getKey_ItemType(item);
 		sortingKey |= (key << (16 + 2 + 8)); //26
 
@@ -584,7 +648,7 @@ struct SortableItem {
 
 
 	void calculateKey_Layer() {
-		df::armor_properties* props = getArmorProperties(item);
+		const df::armor_properties* props = getItemArmorProperties(item);
 
 		if (!props)
 			return;
@@ -663,13 +727,8 @@ struct Inventory {
 		}
 
 		itemsSorted = items; //copy
-		std::sort (itemsSorted.begin(), itemsSorted.end(), SortableItem::sortingFunction);
 
-		for (auto it = itemsSorted.cbegin(); it != itemsSorted.cend(); ++it)
-		{
-			SortableItem* sItem = *it;
-			sItem->addToAllItemsSorted();
-		}
+		SortableItem::sortAndAddToAllItems (itemsSorted);
 
 		SortableItem::getItemTreeString(items      , nullptr, false);
 		SortableItem::getItemTreeString(itemsSorted, nullptr, true);
@@ -708,16 +767,18 @@ inline void SortableItem::addToAllItems() {
 	inventory->allItems.push_back(this);
 }
 
-void SortableItem::addToAllItemsSorted() {
+void SortableItem::sortAndAddToAllItems (SortableItemsVector& itemsVectorSorted) {
 	SortableItemsVector& allItemsSorted = inventory->allItemsSorted;
 
-	allItemsSorted.push_back(this);
+	std::stable_sort (itemsVectorSorted.begin(), itemsVectorSorted.end(), sortingLess);
 
-	if (containedItemsSorted) {
-		for (auto it = containedItemsSorted->cbegin(); it != containedItemsSorted->cend(); ++it)
-		{
-			SortableItem* sItem = *it;
-			sItem->addToAllItemsSorted();
+	for (auto it = itemsVectorSorted.cbegin(); it != itemsVectorSorted.cend(); ++it)
+	{
+		SortableItem* sItem = *it;
+		allItemsSorted.push_back(sItem);
+
+		if (sItem->containedItemsSorted) {
+			sortAndAddToAllItems(*sItem->containedItemsSorted);
 		}
 	}
 }
@@ -735,8 +796,8 @@ void SortableItem::addItemWeight() const {
 		 inv_item->mode == df::unit_inventory_item::WrappedAround) &&
 		 item->isArmor() && weightMult < 15)
 	{
-		int64_t weight64 = (int64_t)weight * 1000000 + weight_fraction;
-		weight64 = weight64 * weightMult / 15;
+		int64_t weight64 = (int64_t)weight * 1000000LL + weight_fraction;
+		weight64 = weight64 * weightMult / 15LL;
 
 		weight          = weight64 / 1000000;
 		weight_fraction = weight64 % 1000000;
@@ -813,11 +874,8 @@ InventoryActionInfo inventoryActions [NUM_ACTIONS] = {
 	{ interface_key::CUSTOM_SHIFT_W, "ear"    , false, false }
 };
 
+
 const df::interface_key A_INV_ADVINVENTORY = interface_key::CHANGETAB;
-
-
-int32_t *const ui_item_view_page = (int32_t*)( (char*)df::global::ui_unit_view_mode + 8 );
-
 
 class ViewscreenAdvInventoryData
 {
@@ -955,10 +1013,13 @@ public:
 
 		OutputString(dim.x - 2, 0, "DFHack", COLOR_LIGHTMAGENTA, COLOR_BLACK, true);
 		OutputString(dim.x - 2, dim.y - 2, "Version " + VERSION_STRING, COLOR_DARKGREY, COLOR_BLACK, true);
-		OutputString(dim.x - 2, dim.y - 1, /*"Written "*/"by Carabus/Rafal99", COLOR_DARKGREY, COLOR_BLACK, true);
 
-		x =  OutputBottomHotkeysLine(dim.y - 1);
-		OutputHotkeyString(x, dim.y - 1, "Basic Inventory  ", Screen::getKeyDisplay(A_INV_ADVINVENTORY), COLOR_LIGHTRED); //gps->dimy - 2
+		x = OutputBottomHotkeysLine(dim.y - 1);
+		OutputHotkeyString(&x, dim.y - 1, "Basic Inventory  ", Screen::getKeyDisplay(A_INV_ADVINVENTORY), COLOR_LIGHTRED); //gps->dimy - 2
+
+		static string creditsString = /*"Written "*/"by Carabus/Rafal99";
+		x = std::max( x, dim.x - 1 - (int)creditsString.length() );
+		OutputString(x, dim.y - 1, creditsString, COLOR_DARKGREY, COLOR_BLACK);
 
 		bool allowMultiSelect = inventoryActions[ currentAction ].allowMultiSelect;
 		x = 0; y = dim.y - 2;
