@@ -16,6 +16,7 @@
 #include <modules/Units.h>
 #include <modules/Items.h>
 
+#include "df/global_objects.h"
 #include "df/world.h"
 #include "df/viewscreen_dungeonmodest.h"
 #include "df/ui_advmode.h"
@@ -49,7 +50,11 @@ using df::global::ui_advmode;
 using df::global::world;
 
 
+DFHACK_PLUGIN("advinventory");
+DFHACK_PLUGIN_IS_ENABLED(is_enabled);
+
 const string VERSION_STRING = "0.1.0";
+
 
 color_ostream* out;
 
@@ -253,6 +258,9 @@ struct SortableItem {
 	string bodyPartName;
 	string weightString;
 
+	string* treeString;
+	string* treeStringSorted;
+
 	int8_t color;
 	int8_t indent;
 	int totalChildren;
@@ -264,12 +272,14 @@ struct SortableItem {
 	SortableItemsVector* containedItemsSorted;
 
 	//inline const SortableItemsVector* getContainedItems() const;
-	inline void addToAllItems();
+	inline void addToAllItems(); // not const because can't add const SortableItem* to vector
 	void addToAllItemsSorted();
 
 
-	SortableItem (const df::unit_inventory_item* _inv_item)
-		: inv_item(_inv_item), item(_inv_item->item), indent(0), totalChildren(0)/*, collapsed(false)*/
+	SortableItem (const df::unit_inventory_item* _inv_item)	:
+		inv_item(_inv_item), item(_inv_item->item),
+		treeString(nullptr), treeStringSorted(nullptr),
+		indent(0), totalChildren(0)/*, collapsed(false)*/
 	{
 		getItemBodyPartName(); // before adding to allItems so flasks won't iterate over themselves
 
@@ -278,8 +288,10 @@ struct SortableItem {
 		calculateKey_Mode_BodyPart();
 	}
 
-	SortableItem (df::item* _item, int8_t _indent)
-		: inv_item(nullptr), item(_item), indent(_indent), totalChildren(0)/*, collapsed(false)*/
+	SortableItem (df::item* _item, int8_t _indent) :
+		inv_item(nullptr), item(_item),
+		treeString(nullptr), treeStringSorted(nullptr),
+		indent(_indent), totalChildren(0)/*, collapsed(false)*/
 	{
 		init();
 
@@ -310,6 +322,11 @@ struct SortableItem {
 
 	~SortableItem()
 	{
+		if (treeString) {
+			delete treeString;
+			delete treeStringSorted;
+		}
+
 		if (containedItems) {
 			for (auto it = containedItems->cbegin(); it != containedItems->cend(); ++it)
 			{
@@ -378,9 +395,41 @@ struct SortableItem {
 	}
 
 
-	static bool sortingFunction (const SortableItem* a, const SortableItem* b)
+	static void getItemTreeString (const SortableItemsVector& itemsVector, const string* prevString, bool sorted)
 	{
-		return (a->sortingKey < b->sortingKey);
+		static const char* BRANCH_STRING = "\xC3""\x1A";
+
+		const SortableItem* last = itemsVector.back();
+		for (auto it = itemsVector.cbegin(); it != itemsVector.cend(); ++it)
+		{
+			SortableItem* sItem = *it;
+
+			if (prevString) {
+				string*& treeString_ = (sorted ? sItem->treeStringSorted : sItem->treeString);
+				treeString_ = new string (*prevString);
+
+				if (sItem == last)
+				{
+					(*treeString_) [ sItem->indent - 2 ] = '\xC0';
+				}
+			}
+
+			if (sItem->containedItems) {
+				const SortableItemsVector* containedItems_ = (sorted ? sItem->containedItemsSorted : sItem->containedItems);
+
+				string nextString;
+				if (prevString) {
+					int8_t pos = sItem->indent - 2;
+					nextString = (*prevString + BRANCH_STRING);
+					nextString [pos]     = ( (sItem == last) ? ' ' : '\xB3' );
+					nextString [pos + 1] = ' ';
+				} else {
+					nextString = BRANCH_STRING;
+				}
+
+				getItemTreeString(*containedItems_, &nextString, sorted);
+			}
+		}
 	}
 
 
@@ -421,7 +470,7 @@ struct SortableItem {
 	}
 
 
-	void addItemWeight();
+	void addItemWeight() const;
 
 	void getItemWeightString()
 	{
@@ -440,6 +489,12 @@ struct SortableItem {
 		{
 			addItemWeight();
 		}
+	}
+
+
+	static bool sortingFunction (const SortableItem* a, const SortableItem* b)
+	{
+		return (a->sortingKey < b->sortingKey);
 	}
 
 
@@ -539,7 +594,9 @@ struct SortableItem {
 		sortingKey |= (key << (8)); //8
 
 		key = (uint32_t)( props->layer_permit );
-		key = std::min( key, 255U );
+		if (key > 200U) {
+			key = std::min( 200U + (key - 200U) / 5U, 255U ); // if permit > 200, we only increase key by 1 every 5th permit
+		}
 		sortingKey |= (key << (0));
 	}
 };
@@ -600,7 +657,9 @@ struct Inventory {
 		for (auto it = unitInventory.cbegin(); it != unitInventory.cend(); ++it)
 		{
 			const df::unit_inventory_item* inv_item = *it;
-			items.push_back( new SortableItem(inv_item) );
+
+			SortableItem* sItem = new SortableItem(inv_item);
+			items.push_back( sItem );
 		}
 
 		itemsSorted = items; //copy
@@ -608,8 +667,12 @@ struct Inventory {
 
 		for (auto it = itemsSorted.cbegin(); it != itemsSorted.cend(); ++it)
 		{
-			(*it)->addToAllItemsSorted();
+			SortableItem* sItem = *it;
+			sItem->addToAllItemsSorted();
 		}
+
+		SortableItem::getItemTreeString(items      , nullptr, false);
+		SortableItem::getItemTreeString(itemsSorted, nullptr, true);
 
 		  totalWeightString = weightToString(   totalWeight, totalWeightFraction );
 		    effWeightString = weightToString(     effWeight,   effWeightFraction );
@@ -659,7 +722,7 @@ void SortableItem::addToAllItemsSorted() {
 	}
 }
 
-void SortableItem::addItemWeight() {
+void SortableItem::addItemWeight() const {
 	int32_t weight          = item->weight;
 	int32_t weight_fraction = item->weight_fraction;
 
@@ -700,11 +763,11 @@ const string& SortableItem::getBodyPartName (int16_t body_part_id)
 	
 const SortableItem* SortableItem::getFlaskAttachedToItem (int16_t body_part_id)
 {
-	SortableItemsVector& allItems = inventory->allItems;
+	const SortableItemsVector& allItems = inventory->allItems;
 
 	for (auto it = allItems.cbegin(); it != allItems.cend(); ++it)
 	{
-		SortableItem* sItem = *it;
+		const SortableItem* sItem = *it;
 		auto inv_item = sItem->inv_item;
 
 		if (inv_item->mode == df::unit_inventory_item::Worn && inv_item->body_part_id == body_part_id)
@@ -753,6 +816,15 @@ InventoryActionInfo inventoryActions [NUM_ACTIONS] = {
 const df::interface_key A_INV_ADVINVENTORY = interface_key::CHANGETAB;
 
 
+int32_t *const ui_item_view_page = (int32_t*)( (char*)df::global::ui_unit_view_mode + 8 );
+
+
+class ViewscreenAdvInventoryData
+{
+	public:
+
+};
+
 class ViewscreenAdvInventory : public dfhack_viewscreen
 {
 public:
@@ -789,8 +861,7 @@ public:
 			initInventory();
 		}
 
-		ViewscreenAdvInventory* screen = new ViewscreenAdvInventory();
-		Screen::show(screen);
+		Screen::show( new ViewscreenAdvInventory() );
 	}
 
 	static void onLeaveScreen()
@@ -906,7 +977,7 @@ public:
 		OutputHotkeyString(&x, y, "Expand/Collapse All", Screen::getKeyDisplay(interface_key::CUSTOM_CTRL_C), COLOR_LIGHTGREEN, COLOR_GREY);
 		x += 3;*/
 		x += 1;
-		OutputHotkeyString(&x, y, sortItems ? "Items are sorted" : "Items are not sorted", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_S), COLOR_LIGHTGREEN, sortItems ? COLOR_WHITE : COLOR_GREY);
+		OutputHotkeyString(&x, y, sortItems ? "Items are sorted" : "Items are not sorted", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_S), COLOR_LIGHTGREEN, ( sortItems ? COLOR_WHITE : COLOR_GREY ));
 		//"Sort items" : "Do not sort items"
 		x = selectRangeX + 10;
 		OutputHotkeyString(&x, y, "Action on select", Screen::getKeyDisplay(interface_key::CUSTOM_SHIFT_A), ( allowMultiSelect ? COLOR_LIGHTGREEN : COLOR_GREEN ), ( allowMultiSelect ? COLOR_WHITE : COLOR_DARKGREY ));
@@ -968,13 +1039,9 @@ public:
 		static const Screen::Pen flagsBgPen ('\x2D', COLOR_DARKGREY, COLOR_BLACK); // '\xFA' '\x2D'
 		Screen::fillRect( flagsBgPen, actionFlagsX, itemsListTopY, actionFlagsX + NUM_DISPLAYED_ACTION_FLAGS - 1, itemsListTopY + itemRows - 1 );
 
-		//static const Screen::Pen dotPen ('.', COLOR_LIGHTGREEN, COLOR_BLACK);
-		static const Screen::Pen dotPen     ('\xC3', COLOR_GREEN, COLOR_BLACK);
-		static const Screen::Pen dotPenLast ('\xC0', COLOR_GREEN, COLOR_BLACK);
-		static const Screen::Pen linePen    ('\x1A', COLOR_GREEN, COLOR_BLACK); // '\xC4' '\x1A'
 		for (int i = 0; i < itemRows; i++)
 		{
-			SortableItem* sItem = allItems[ firstIndex + i ];
+			const SortableItem* sItem = allItems[ firstIndex + i ];
 			const int x = itemNameX + sItem->indent;
 			const int y = itemsListTopY + i;
 
@@ -985,21 +1052,17 @@ public:
 			OutputLimitedString (bodyPartX, y, std::min( wx - 1, weightX - 2 ), sItem->bodyPartName, sItem->color);
 
 			// contained items tree
-			if (sItem->totalChildren > 0)
+			if (sItem->treeString)
 			{
-				int yLast = y + sItem->totalChildren;
-				if (sItem->totalChildren > 1)
-				{
-					int y2 = std::min( yLast - 1, itemsListBottomY );
-					Screen::fillRect(dotPen, x, y + 1, x, y2);
-				}
-				if (yLast <= itemsListBottomY)
-				{
-					Screen::paintTile (dotPenLast, x, yLast);
-				}
-				int y2 = std::min( yLast, itemsListBottomY );
-				Screen::fillRect(linePen, x + 1, y + 1, x + 1, y2);
+				OutputString (itemNameX, y, ( sortItems ? *(sItem->treeStringSorted) : *(sItem->treeString) ), COLOR_GREEN);
 			}
+
+			/*if (sItem->totalChildren > 0) // default indentation using dots
+			{
+				static const Screen::Pen dotPen ('.', COLOR_LIGHTGREEN, COLOR_BLACK);
+				int y2 = std::min( y + sItem->totalChildren, itemsListBottomY );
+				Screen::fillRect(dotPen, x, y + 1, x, y2);
+			}*/
 
 			// possible action flags
 			const bool* possibleActions = sItem->possibleActions;
@@ -1023,11 +1086,13 @@ public:
 		// scrollbar
 		static const Screen::Pen scrollbarPen ('\xBA', COLOR_DARKGREY, COLOR_BLACK); // '\xB3' '\xBA'
 		Screen::fillRect(scrollbarPen, scrollBarX, itemsListTopY + 1, scrollBarX, itemsListBottomY - 1);
-		OutputTile (scrollBarX, itemsListTopY   , '\x1E', COLOR_WHITE); //   up arrow triangle
-		OutputTile (scrollBarX, itemsListBottomY, '\x1F', COLOR_WHITE); // down arrow triangle
+		
+		int firstIndexRange = allItems.size() - maxRows;
+		int8_t arrowColor = ( (firstIndexRange > 0) ? COLOR_WHITE : COLOR_DARKGREY );
+		OutputTile (scrollBarX, itemsListTopY   , '\x1E', arrowColor); //   up arrow triangle
+		OutputTile (scrollBarX, itemsListBottomY, '\x1F', arrowColor); // down arrow triangle
 
 		// scrollbar button
-		int firstIndexRange = allItems.size() - maxRows;
 		if (firstIndexRange > 0)
 		{
 			int buttonPos = 0;
@@ -1052,7 +1117,7 @@ public:
 		OutputString(&x, y, "Effective: ", COLOR_GREY);
 		OutputString(&x, y, inventory->effWeightString, COLOR_YELLOW);
 		x += 3;
-		OutputString(&x, y, "Can carry: ", COLOR_GREY);
+		OutputString(&x, y, "Allowed: ", COLOR_GREY); //"Can carry: "
 		OutputString(&x, y, inventory->allowedWeightString, COLOR_LIGHTGREEN);
 	}
 
@@ -1120,10 +1185,6 @@ inline const SortableItemsVector& Inventory::getAllItems() const
 }
 
 
-DFHACK_PLUGIN("advinventory");
-
-DFHACK_PLUGIN_IS_ENABLED(is_enabled);
-
 struct advinventory_hook : df::viewscreen_dungeonmodest {
     typedef df::viewscreen_dungeonmodest interpose_base;
 
@@ -1181,7 +1242,8 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
 		//OutputString(0, 1, enum_item_key(ui_advmode->menu).append("  "));
 
 		//std::stringstream ss;
-		//ss << "0x" << std::hex << ui_advmode << "  0x" << (ui_advmode + 1) << " ";
+		//ss << "0x" << std::hex << ui_advmode << "  ";
+		//ss << "0x" << (ui_advmode + 1) << " ";
 		//OutputString(0, 1, ss.str());
 		//std::stringstream ss;
 		//ss << "0x" << std::hex << Gui::getCurViewscreen(true) << " ";
@@ -1193,6 +1255,8 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
 		//ss.clear();
 		//ss << "0x" << std::hex << Gui::getSelectedUnit(*out, true) << " ";
 		//OutputString(0, 2, ss.str());
+
+		//OutputString(0, 1, intToString(*ui_item_view_page) + " ");
 
 		switch (ui_advmode->menu)
         {
@@ -1226,7 +1290,7 @@ command_result advinventory (color_ostream &out, vector <string> & parameters)
     if (!parameters.empty())
         return CR_WRONG_USAGE;
     CoreSuspender suspend;
-    out.print("Hello! I do nothing, remember?\n");
+    out.print("AdvInventory: I am a GUI plugin, typing this command in DFHack widnow does nothing.\n");
     return CR_OK;
 }
 
