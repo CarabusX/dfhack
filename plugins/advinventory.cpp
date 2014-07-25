@@ -889,6 +889,17 @@ class ViewscreenAdvInventoryData
 	static const int itemsListLeftX    =  0;
 	static const int itemsListRightX_  = -1;
 
+	static const int numItemHotkeys    = 26; // + 10
+
+	df::coord2d dim;
+
+	int itemsListRightX;
+	int itemsListBottomY;
+
+	int maxRows;
+	int firstIndexRange;
+
+
 public:
 	static bool isAdvancedMode;
 	static bool sortItems;
@@ -905,12 +916,16 @@ public:
 		inventory()
 	{
 		firstIndex = 0;
+
+		checkResize(); // for safety
 	}
 
 
-    void feed (df::viewscreen *screen, set<df::interface_key> *input)
+	void feed (df::viewscreen *screen, set<df::interface_key> *input)
 	{
-        if (input->count(interface_key::LEAVESCREEN))
+ 		checkResize();
+		
+		if (input->count(interface_key::LEAVESCREEN))
         {
 			input->clear();
             Screen::dismiss(screen);
@@ -949,6 +964,30 @@ public:
 
             return;
         }
+		else if (input->count(interface_key::SECONDSCROLL_UP))
+        {
+			if (firstIndex > 0) {
+				firstIndex--;
+			}
+        }
+		else if (input->count(interface_key::SECONDSCROLL_DOWN))
+        {
+			if (firstIndex < firstIndexRange) {
+				firstIndex++;
+			}
+ 		}
+		else if (input->count(interface_key::SECONDSCROLL_PAGEUP))
+        {
+			const int hotkeyRows = std::min( maxRows, numItemHotkeys );
+			firstIndex = std::max( 0, firstIndex - hotkeyRows );
+        }
+		else if (input->count(interface_key::SECONDSCROLL_PAGEDOWN))
+        {
+			if (firstIndex < firstIndexRange) {
+				const int hotkeyRows = std::min( maxRows, numItemHotkeys );
+				firstIndex = std::min( firstIndex + hotkeyRows, firstIndexRange );
+			}
+        }
 		else if (input->count(interface_key::CUSTOM_SHIFT_S))
         {
 			sortItems = !sortItems;
@@ -969,15 +1008,39 @@ public:
 		}
 	}
 
+
+    void checkResize()
+	{
+		df::coord2d newSize = Screen::getWindowSize();
+
+		if (newSize != dim)
+		{
+			dim = newSize;
+			resize();
+		}
+	}
+
+    void resize()
+	{
+		itemsListRightX  = ( (itemsListRightX_  < 0) ? dim.x : 0 ) + itemsListRightX_;
+		itemsListBottomY = ( (itemsListBottomY_ < 0) ? dim.y : 0 ) + itemsListBottomY_;
+
+		maxRows         = itemsListBottomY + 1 - itemsListTopY;
+		firstIndexRange = inventory.getAllItems().size() - maxRows;
+	}
+
+
     void render()
     {
-        Screen::clear();
+ 		checkResize();
+
+		Screen::clear();
         //Screen::drawBorder("  Advanced Inventory  ");
 
 		renderItemsList();
 
 		int x, y;
-		auto dim = Screen::getWindowSize();
+
 		x = 0;
 		OutputString(&x, 0, "\x0F", COLOR_YELLOW);
 		OutputString(&x, 0, "Advanced Inventory");
@@ -1032,9 +1095,7 @@ public:
 private:
 
 	void renderItemsList() {
-		auto dim = Screen::getWindowSize();
-		const int itemsListRightX  = ( (itemsListRightX_  < 0) ? dim.x : 0 ) + itemsListRightX_;
-		const int itemsListBottomY = ( (itemsListBottomY_ < 0) ? dim.y : 0 ) + itemsListBottomY_;
+		int x, y;
 
 		const int hotkeyX      = itemsListLeftX;
 		const int selectedX    = hotkeyX   + 2;
@@ -1052,23 +1113,21 @@ private:
 		}
 
 		const SortableItemsVector& allItems = inventory.getAllItems();
-		const int maxRows  = itemsListBottomY + 1 - itemsListTopY;
 		const int itemRows = std::min( (int)allItems.size() - firstIndex, maxRows );
-		int x, y;
 
 		// hotkeys
-		const int numItemHotkeys = std::min( itemRows, 26/* + 10*/ );
+		const int hotkeyRows = std::min( itemRows, numItemHotkeys );
 		static Screen::Pen hotkeyPen   (0     , COLOR_LIGHTGREEN, COLOR_BLACK);
 		static Screen::Pen hotkeyBgPen ('\xFA', COLOR_LIGHTGREEN, COLOR_BLACK);
-		for (int i = 0; i < numItemHotkeys; i++)
+		for (int i = 0; i < hotkeyRows; i++)
 		{
 			//char ch = char( (i < 26) ? ('a' + i) : ('0' + i - 26) );
 			char ch = char('a' + i);
 			Screen::paintTile( hotkeyPen.chtile(ch), hotkeyX, itemsListTopY + i );
 		}
-		if (numItemHotkeys < itemRows)
+		if (hotkeyRows < itemRows)
 		{
-			Screen::fillRect( hotkeyBgPen, hotkeyX, itemsListTopY + numItemHotkeys, hotkeyX, itemsListTopY + itemRows - 1 );
+			Screen::fillRect( hotkeyBgPen, hotkeyX, itemsListTopY + hotkeyRows, hotkeyX, itemsListTopY + itemRows - 1 );
 		}
 
 		static const Screen::Pen flagsBgPen ('\x2D', COLOR_DARKGREY, COLOR_BLACK); // '\xFA' '\x2D'
@@ -1122,7 +1181,6 @@ private:
 		static const Screen::Pen scrollbarPen ('\xBA', COLOR_DARKGREY, COLOR_BLACK); // '\xB3' '\xBA'
 		Screen::fillRect(scrollbarPen, scrollBarX, itemsListTopY + 1, scrollBarX, itemsListBottomY - 1);
 		
-		int firstIndexRange = allItems.size() - maxRows;
 		int8_t arrowColor = ( (firstIndexRange > 0) ? COLOR_WHITE : COLOR_DARKGREY );
 		OutputTile (scrollBarX, itemsListTopY   , '\x1E', arrowColor); //   up arrow triangle
 		OutputTile (scrollBarX, itemsListBottomY, '\x1F', arrowColor); // down arrow triangle
@@ -1137,7 +1195,7 @@ private:
 				buttonPos = 1 + std::min( firstIndex, firstIndexRange ) * (scrollBarRange - 1) / firstIndexRange;
 			}
 
-			OutputTile (scrollBarX, itemsListTopY + 1 + buttonPos, '\xF0', COLOR_YELLOW, COLOR_BROWN); // '\xF0' '\xFE'
+			OutputTile (scrollBarX, itemsListTopY + 1 + buttonPos, '\xF0', COLOR_LIGHTGREEN, COLOR_GREEN); // '\xF0' '\xFE' // COLOR_YELLOW, COLOR_BROWN
 		}
 
 		x = 0; y = dim.y - 6;
@@ -1173,21 +1231,21 @@ private:
 		return x;
 	}
 
-	static int tabHotkeyStringX;
+	static int modeHotkeyStringX;
 
 public:
-	static int getTabHotkeyStringX() {
-		if (tabHotkeyStringX == -1)	{
-			tabHotkeyStringX = OutputBottomHotkeysLine(-1);
+	static int getModeHotkeyStringX() {
+		if (modeHotkeyStringX == -1)	{
+			modeHotkeyStringX = OutputBottomHotkeysLine(-1);
 		}
-		return tabHotkeyStringX;
+		return modeHotkeyStringX;
 	}
 };
 
 bool ViewscreenAdvInventoryData::isAdvancedMode  = false;
 bool ViewscreenAdvInventoryData::sortItems = false; //true;
 InventoryAction ViewscreenAdvInventoryData::currentAction = ACTION_VIEW;
-int ViewscreenAdvInventoryData::tabHotkeyStringX = -1;
+int ViewscreenAdvInventoryData::modeHotkeyStringX = -1;
 
 
 inline const SortableItemsVector& Inventory::getAllItems() const
@@ -1323,7 +1381,7 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
         {
 			case ui_advmode_menu::Inventory:
 			{
-				int x = ViewscreenAdvInventoryData::getTabHotkeyStringX();
+				int x = ViewscreenAdvInventoryData::getModeHotkeyStringX();
 				OutputHotkeyString(x, 24, "Advanced Inventory", Screen::getKeyDisplay(A_INV_ADVANCEDMODE), COLOR_LIGHTRED); // gps->dimy - 2
 				OutputTile(79, 23, '\xB3', COLOR_DARKGREY);
 				break;
