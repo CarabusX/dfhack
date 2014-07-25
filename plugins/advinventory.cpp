@@ -247,7 +247,7 @@ typedef vector< SortableItem* const > SortableItemsVector;
 
 struct Inventory;
 struct SortableItem {
-	static Inventory*& inventory;
+	static Inventory* inventory;
 
 	const df::unit_inventory_item *const inv_item;
 	df::item *const item;
@@ -273,7 +273,6 @@ struct SortableItem {
 	int16_t itemQuality;
 	int32_t itemValue;
 
-	//inline const SortableItemsVector* getContainedItems() const;
 	inline void addToAllItems(); // not const because can't add const SortableItem* to vector
 	static void sortAndAddToAllItems (SortableItemsVector& itemsVectorSorted);
 
@@ -515,7 +514,7 @@ struct SortableItem {
 		cmp = a->subtypeName.compare(b->subtypeName);
 		if (cmp != 0) return cmp;
 
-		if (a->materialName) {
+		if (a->materialName && b->materialName) {
 			cmp = a->materialName->compare(*b->materialName);
 			if (cmp != 0) return cmp;
 		}
@@ -676,7 +675,6 @@ struct Inventory {
 	SortableItemsVector allItems;  // includes items in containers
 	SortableItemsVector allItemsSorted;
 
-	//inline const SortableItemsVector& getItems() const;
 	inline const SortableItemsVector& getAllItems() const;
 
 	int32_t totalWeight; // TODO: use int64_t instead of two variables?
@@ -709,12 +707,16 @@ struct Inventory {
 			allowedWeight = 1;
 		}
 		armorWeightMult = std::max( 0, 15 - armorSkill );
+
+		loadItems();
 	}
 
 	void loadItems()
 	{
 		if (!playerUnit)
 			return;
+
+		SortableItem::inventory = this;
 
 		auto &unitInventory = playerUnit->inventory;
 
@@ -762,6 +764,8 @@ struct Inventory {
 	}
 };
 
+
+Inventory* SortableItem::inventory = nullptr;
 
 inline void SortableItem::addToAllItems() {
 	inventory->allItems.push_back(this);
@@ -875,78 +879,51 @@ InventoryActionInfo inventoryActions [NUM_ACTIONS] = {
 };
 
 
-const df::interface_key A_INV_ADVINVENTORY = interface_key::CHANGETAB;
+const df::interface_key A_INV_ADVANCEDMODE = interface_key::CHANGETAB;
+
 
 class ViewscreenAdvInventoryData
 {
-	public:
-
-};
-
-class ViewscreenAdvInventory : public dfhack_viewscreen
-{
-public:
 	static const int itemsListTopY     =  2;
 	static const int itemsListBottomY_ = -8;
 	static const int itemsListLeftX    =  0;
 	static const int itemsListRightX_  = -1;
 
-	static bool isActive; // is inventory screen in advanced mode
+public:
+	static bool isAdvancedMode;
 	static bool sortItems;
 	static InventoryAction currentAction;
-	static Inventory* inventory;
-	static int firstIndex;
+
+	static ViewscreenAdvInventoryData* instance;
+
+	Inventory inventory;
+
+	int firstIndex;
 
 
-	static void initInventory()
+	ViewscreenAdvInventoryData() :
+		inventory()
 	{
-		inventory = new Inventory();
-		inventory->loadItems();
-
 		firstIndex = 0;
 	}
 
-	static void show()
+
+    void feed (df::viewscreen *screen, set<df::interface_key> *input)
 	{
-		/*if (!instance)
-			instance = new ViewscreenAdvInventory();
-		else
-			instance->parent = nullptr;
-		Screen::show(instance);*/
-
-		if (!inventory)
-		{
-			initInventory();
-		}
-
-		Screen::show( new ViewscreenAdvInventory() );
-	}
-
-	static void onLeaveScreen()
-	{
-		if (inventory)
-		{
-			delete inventory;
-			inventory = nullptr;
-		}
-	}
-
-    void feed(set<df::interface_key> *input)
-    {
         if (input->count(interface_key::LEAVESCREEN))
         {
 			input->clear();
-            Screen::dismiss(this);
+            Screen::dismiss(screen);
 
 			input->insert(interface_key::LEAVESCREEN);
-			parent->feed(input);
+			screen->parent->feed(input);
             return;
         }
-		else if (input->count(A_INV_ADVINVENTORY))
+		else if (input->count(A_INV_ADVANCEDMODE))
         {
-			isActive = false;
+			isAdvancedMode = false;
 			input->clear();
-            Screen::dismiss(this);
+            Screen::dismiss(screen);
 
 			//ui_advmode->menu = ui_advmode_menu::Inventory;
             
@@ -990,15 +967,10 @@ public:
 				}
 			}
 		}
-    }
+	}
 
     void render()
     {
-        if (Screen::isDismissed(this))
-            return;
-
-        dfhack_viewscreen::render(); //calls check_resize();
-
         Screen::clear();
         //Screen::drawBorder("  Advanced Inventory  ");
 
@@ -1015,7 +987,7 @@ public:
 		OutputString(dim.x - 2, dim.y - 2, "Version " + VERSION_STRING, COLOR_DARKGREY, COLOR_BLACK, true);
 
 		x = OutputBottomHotkeysLine(dim.y - 1);
-		OutputHotkeyString(&x, dim.y - 1, "Basic Inventory  ", Screen::getKeyDisplay(A_INV_ADVINVENTORY), COLOR_LIGHTRED); //gps->dimy - 2
+		OutputHotkeyString(&x, dim.y - 1, "Basic Inventory  ", Screen::getKeyDisplay(A_INV_ADVANCEDMODE), COLOR_LIGHTRED); //gps->dimy - 2
 
 		static string creditsString = /*"Written "*/"by Carabus/Rafal99";
 		x = std::max( x, dim.x - 1 - (int)creditsString.length() );
@@ -1057,6 +1029,8 @@ public:
 		OutputTile(79, dim.y - 6, '\xB3', COLOR_DARKGREY);
 	}
 
+private:
+
 	void renderItemsList() {
 		auto dim = Screen::getWindowSize();
 		const int itemsListRightX  = ( (itemsListRightX_  < 0) ? dim.x : 0 ) + itemsListRightX_;
@@ -1077,7 +1051,7 @@ public:
 			scrollBarX   = actionFlagsX + 2 + NUM_DISPLAYED_ACTION_FLAGS;
 		}
 
-		const SortableItemsVector& allItems = inventory->getAllItems();
+		const SortableItemsVector& allItems = inventory.getAllItems();
 		const int maxRows  = itemsListBottomY + 1 - itemsListTopY;
 		const int itemRows = std::min( (int)allItems.size() - firstIndex, maxRows );
 		int x, y;
@@ -1173,35 +1147,14 @@ public:
 		OutputString(&x, y, "Weight:", COLOR_WHITE);
 		x += 2;
 		OutputString(&x, y, "Total: ", COLOR_GREY);
-		OutputString(&x, y, inventory->totalWeightString, COLOR_YELLOW);
+		OutputString(&x, y, inventory.totalWeightString, COLOR_YELLOW);
 		x += 3;
 		OutputString(&x, y, "Effective: ", COLOR_GREY);
-		OutputString(&x, y, inventory->effWeightString, COLOR_YELLOW);
+		OutputString(&x, y, inventory.effWeightString, COLOR_YELLOW);
 		x += 3;
 		OutputString(&x, y, "Allowed: ", COLOR_GREY); //"Can carry: "
-		OutputString(&x, y, inventory->allowedWeightString, COLOR_LIGHTGREEN);
+		OutputString(&x, y, inventory.allowedWeightString, COLOR_LIGHTGREEN);
 	}
-
-
-	string getFocusString() { return "adv_inventory"; }
-    //void onShow() {};
-
-private:
-	ViewscreenAdvInventory()
-	{
-	}
-
-public:
-	static int getTabHotkeyStringX() {
-		if (tabHotkeyStringX == -1)
-		{
-			tabHotkeyStringX =  OutputBottomHotkeysLine(-1);
-		}
-		return tabHotkeyStringX;
-	}
-
-private:
-	static int tabHotkeyStringX;
 
 	static int OutputBottomHotkeysLine (int y)
 	{
@@ -1219,31 +1172,78 @@ private:
 		x += 3;
 		return x;
 	}
+
+	static int tabHotkeyStringX;
+
+public:
+	static int getTabHotkeyStringX() {
+		if (tabHotkeyStringX == -1)	{
+			tabHotkeyStringX = OutputBottomHotkeysLine(-1);
+		}
+		return tabHotkeyStringX;
+	}
 };
 
-bool ViewscreenAdvInventory::isActive  = false;
-bool ViewscreenAdvInventory::sortItems = false; //true;
-InventoryAction ViewscreenAdvInventory::currentAction = ACTION_VIEW;
-Inventory* ViewscreenAdvInventory::inventory = nullptr;
-Inventory*& SortableItem::inventory = ViewscreenAdvInventory::inventory;
-int ViewscreenAdvInventory::firstIndex = 0;
-int ViewscreenAdvInventory::tabHotkeyStringX = -1;
+bool ViewscreenAdvInventoryData::isAdvancedMode  = false;
+bool ViewscreenAdvInventoryData::sortItems = false; //true;
+InventoryAction ViewscreenAdvInventoryData::currentAction = ACTION_VIEW;
+int ViewscreenAdvInventoryData::tabHotkeyStringX = -1;
 
-
-/*inline const SortableItemsVector* SortableItem::getContainedItems() const
-{
-	return (ViewscreenAdvInventory::sortItems ? containedItemsSorted : containedItems);
-}
-
-inline const SortableItemsVector& Inventory::getItems() const
-{
-	return (ViewscreenAdvInventory::sortItems ? itemsSorted : items);
-}*/
 
 inline const SortableItemsVector& Inventory::getAllItems() const
 {
-	return (ViewscreenAdvInventory::sortItems ? allItemsSorted : allItems);
+	return (ViewscreenAdvInventoryData::sortItems ? allItemsSorted : allItems);
 }
+
+
+class ViewscreenAdvInventory : public dfhack_viewscreen
+{
+public:
+	static ViewscreenAdvInventoryData* viewscreenData;
+
+
+	static void show()
+	{
+		Screen::show( new ViewscreenAdvInventory() );
+	}
+
+	static void onLeaveScreen()
+	{
+		if (viewscreenData)
+		{
+			delete viewscreenData;
+			viewscreenData = nullptr;
+		}
+	}
+
+	ViewscreenAdvInventory()
+	{
+		if (!viewscreenData)
+		{
+			viewscreenData = new ViewscreenAdvInventoryData();
+		}
+	}
+
+	void feed(set<df::interface_key> *input)
+    {
+		viewscreenData->feed(this, input);
+    }
+
+    void render()
+    {
+        if (Screen::isDismissed(this))
+            return;
+
+        dfhack_viewscreen::render(); //calls check_resize();
+
+		viewscreenData->render(); 
+	}
+
+	string getFocusString() { return "adv_inventory"; }
+    //void onShow() {};
+};
+
+ViewscreenAdvInventoryData* ViewscreenAdvInventory::viewscreenData = nullptr;
 
 
 struct advinventory_hook : df::viewscreen_dungeonmodest {
@@ -1256,15 +1256,15 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
 			case ui_advmode_menu::Default:
 				if (input->count(interface_key::CUSTOM_CTRL_I))
 				{
-					ViewscreenAdvInventory::isActive = true;
+					ViewscreenAdvInventoryData::isAdvancedMode = true;
 					input->clear();
 					input->insert(interface_key::A_INV_LOOK);
 				}
 				break;
 			case ui_advmode_menu::Inventory:
-				if (input->count(A_INV_ADVINVENTORY))
+				if (input->count(A_INV_ADVANCEDMODE))
 				{
-					ViewscreenAdvInventory::isActive = true;
+					ViewscreenAdvInventoryData::isAdvancedMode = true;
 					ViewscreenAdvInventory::show();
 					return;
 				}
@@ -1282,7 +1282,7 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
 	
 	DEFINE_VMETHOD_INTERPOSE(void, logic, ())
     {
-        if (ui_advmode->menu == ui_advmode_menu::Inventory && ViewscreenAdvInventory::isActive)
+        if (ui_advmode->menu == ui_advmode_menu::Inventory && ViewscreenAdvInventoryData::isAdvancedMode)
 		{
 			//static int i = 0;
 			//out->print("advinventory_hook::logic() %d\n", i++);
@@ -1295,7 +1295,7 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
 		
 	DEFINE_VMETHOD_INTERPOSE(void, render, ())
     {
-		if (ui_advmode->menu == ui_advmode_menu::Inventory && ViewscreenAdvInventory::isActive)
+		if (ui_advmode->menu == ui_advmode_menu::Inventory && ViewscreenAdvInventoryData::isAdvancedMode)
 			return;
 
 		INTERPOSE_NEXT(render)();
@@ -1323,8 +1323,8 @@ struct advinventory_hook : df::viewscreen_dungeonmodest {
         {
 			case ui_advmode_menu::Inventory:
 			{
-				int x = ViewscreenAdvInventory::getTabHotkeyStringX();
-				OutputHotkeyString(x, 24, "Advanced Inventory", Screen::getKeyDisplay(A_INV_ADVINVENTORY), COLOR_LIGHTRED); // gps->dimy - 2
+				int x = ViewscreenAdvInventoryData::getTabHotkeyStringX();
+				OutputHotkeyString(x, 24, "Advanced Inventory", Screen::getKeyDisplay(A_INV_ADVANCEDMODE), COLOR_LIGHTRED); // gps->dimy - 2
 				OutputTile(79, 23, '\xB3', COLOR_DARKGREY);
 				break;
 			}
